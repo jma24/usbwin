@@ -52,7 +52,13 @@ pub fn run(plan: &WritePlan, info: &DeviceInfo, verify: bool) -> Result<()> {
         tracing::warn!("--no-verify: skipping read-back verification");
     }
 
-    // 5. Eject. macOS flushes any remaining writes here.
+    // 5. Eject. macOS aggressively auto-remounts the disk once the verify
+    //    pass completes (the freshly-written ISO has a recognizable
+    //    filesystem signature). Unmount first so eject doesn't trip over
+    //    a re-mount race. We ignore the unmount error - if nothing is
+    //    mounted that's fine; if something is mounted that we can't unmount,
+    //    eject will surface a clearer error in a moment anyway.
+    let _ = diskutil::unmount_disk(&bsd_path);
     diskutil::eject(&bsd_path).context("eject after write")?;
 
     println!("\nusbwin: {} -> {} OK", plan.iso_path.display(), info.path);
