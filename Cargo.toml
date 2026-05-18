@@ -21,6 +21,8 @@ anyhow = "1"
 thiserror = "1"
 clap = { version = "4", features = ["derive"] }
 nix = { version = "0.27", features = ["fs", "ioctl", "mount"] }
+plist = "1.6"
+serde = { version = "1", features = ["derive"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
