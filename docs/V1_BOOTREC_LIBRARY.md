@@ -639,6 +639,136 @@ ms-sys names are domain-jargon-y; new users shouldn't have to know that
 "PE" means "Preinstall Environment" to write a Win 7 boot record. The
 old names are accepted as aliases for muscle memory.
 
+## Audience and packaging
+
+`bootrec` is its **own project**, not a usbwin subcomponent. Separate
+repo, separate releases, separate brew formula, independent
+distribution.
+
+### Why separate (audience analysis)
+
+usbwin's audience is small and narrow: macOS-on-Apple-Silicon users
+who want Windows install USBs without Rosetta/VMs. The community is
+likely dozens to low-hundreds of people total, growing slowly as more
+sysadmins, IT folk, and retro-tech enthusiasts hit the post-Rosetta
+gap.
+
+`bootrec`'s audience is much wider:
+
+| Audience                                       | Approximate size | Notes |
+|------------------------------------------------|------------------|-------|
+| Linux/BSD users replacing ms-sys (cleaner replacement) | ~thousands       | The largest single bucket. ms-sys is in most Linux distros' repos but GPL-2 and ancient; bootrec is MIT, Rust, maintained. |
+| Cross-platform USB-tool maintainers            | ~dozens of projects, transitively reaching thousands | Ventoy, WoeUSB, multibootusb, easy2boot, custom in-house. They want bootrec as a dep. |
+| Retro-computing hobbyists                      | ~thousands       | MSFN, boot-land, Vogons forum people. Hand-rolling install media. |
+| Forensic / data-recovery folks                 | ~hundreds        | Niche but high-skill; rebuilding damaged boot records is a real use case. |
+| Embedded / firmware engineers                  | ~thousands       | Anyone shipping x86 boot media for kiosks, SBCs, signage, industrial. |
+| CI / automation                                | ~hundreds        | Linux CI runners producing Windows install media as artifacts. |
+| Educators / OS-dev curriculum                  | ~hundreds        | bootrec is one of few public reference implementations derived purely from specs; teaching material. |
+
+usbwin **uses** bootrec. usbwin is a downstream consumer like any
+other. The dependency direction is `usbwin → bootrec`, never the
+reverse.
+
+### What this implies operationally
+
+1. **Separate repository** when the work starts in earnest. `bootrec`
+   on GitHub as its own project; usbwin pins a Cargo dependency by
+   git URL during dev and by published version after `bootrec` hits
+   crates.io.
+
+2. **Separate Homebrew formulas**, two install commands:
+
+   ```sh
+   brew install bootrec          # standalone — what the wider audience wants
+   brew install usbwin           # depends on bootrec; transitively installs it
+   ```
+
+   Each formula maintained in its own tap. bootrec's would be a
+   better candidate for eventual homebrew-core inclusion than usbwin's,
+   precisely because the audience is wider and the tool is smaller and
+   more general-purpose.
+
+3. **Separate clean-room audits.** bootrec's reading log, PR
+   attestations, similarity-distribution data are all tracked in
+   bootrec's repo. usbwin's repo doesn't carry that burden — it links
+   against bootrec and inherits the audit conclusion as a third party
+   would. The clean-room story is structurally cleaner this way.
+
+4. **Independent release cadence.** bootrec might hit 1.0 long before
+   usbwin's clean-room-bootrec story is integrated. usbwin meanwhile
+   continues shipping with ms-sys shell-out (v0.2/v0.3 path) and
+   migrates to bootrec when it makes sense — possibly as v2.0.
+
+5. **Different governance later.** If bootrec gains maintainers from
+   the wider audience (Linux distros, USB-tool authors), it can have
+   its own governance model. usbwin stays a smaller-team project. The
+   API contract between them is a normal library API contract — same
+   way Rust apps depend on `serde` without `serde` becoming part of
+   each consuming project.
+
+### Brew packaging sketch
+
+`bootrec`'s formula (the one the wider audience wants):
+
+```ruby
+class Bootrec < Formula
+  desc "Clean-room implementation of Microsoft boot records (MBR/PBR)"
+  homepage "https://github.com/jmappleby/bootrec"
+  url "https://github.com/jmappleby/bootrec/archive/v1.0.0.tar.gz"
+  sha256 "..."
+  license "MIT"
+
+  depends_on "rust" => :build
+  depends_on "nasm" => :build
+
+  def install
+    system "cargo", "install", *std_cargo_args
+  end
+
+  test do
+    # Smoke: produce an XP MBR, check the boot signature is right
+    assert_predicate (testpath/"mbr.bin"), :exist?
+  end
+end
+```
+
+`usbwin`'s formula (downstream):
+
+```ruby
+class Usbwin < Formula
+  desc "Native arm64 macOS bootable-USB writer"
+  homepage "https://github.com/jmappleby/usbwin"
+  url "https://github.com/jmappleby/usbwin/archive/v2.0.0.tar.gz"
+  sha256 "..."
+  license "MIT"
+
+  depends_on "bootrec"          # transitive: brings in bootrec
+  depends_on "rust" => :build
+  depends_on "nasm" => :build
+
+  def install
+    system "cargo", "install", *std_cargo_args
+  end
+end
+```
+
+Two brew commands, two install paths, clean dependency graph.
+
+### Migration plan for usbwin
+
+This is what happens to usbwin when bootrec is ready:
+
+- **Today (v0.2 / v0.3):** usbwin shells out to ms-sys. Working.
+- **v1.0 (usbwin):** Same. ms-sys-based, real-hardware-verified.
+- **v2.0 (usbwin) — coincides with bootrec 1.0:** usbwin replaces
+  the ms-sys shell-out with `bootrec::*` library calls. The two
+  shell-out helpers (`ms_sys_mbr7`, `ms_sys_fat32pe`, etc.) become
+  thin wrappers around `bootrec::mbr_win7()` and `bootrec::fat32_pbr_bootmgr()`.
+  ms-sys becomes optional (kept around as a fallback / oracle).
+- **v3.0 (usbwin):** ms-sys removed entirely. Single MIT binary.
+
+Each step is independently shippable; the migration is incremental.
+
 ## License
 
 `bootrec` is MIT-2.0. Independent of usbwin (could be used by other
