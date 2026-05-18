@@ -22,8 +22,10 @@
 
 use anyhow::{anyhow, bail, Context, Result};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use std::fs::File;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use usbwin_core::{Device, WritePlan};
 use usbwin_disk::raw::{OpenMode, RawDevice};
@@ -190,7 +192,7 @@ fn copy_iso_contents(iso_mount: &Path, usb_mount: &Path) -> Result<()> {
         }
     }
 
-    let start = std::time::Instant::now();
+    let start = Instant::now();
     let mut bytes_copied = 0u64;
     let mut files_copied = 0u64;
     for entry in &entries {
@@ -199,39 +201,35 @@ fn copy_iso_contents(iso_mount: &Path, usb_mount: &Path) -> Result<()> {
         }
         let src = iso_mount.join(entry.rel.as_path());
         let dest = usb_mount.join(entry.rel.as_path());
-        std::fs::copy(&src, &dest)
-            .with_context(|| format!("copy {} -> {}", src.display(), dest.display()))?;
-        bytes_copied += entry.size;
-        files_copied += 1;
 
-        // Update the messages on each bar with rate + ETA. We compute these
-        // ourselves rather than relying on indicatif's {bytes_per_sec}/{eta}
-        // because we want the eta to be the SLOWER of the two metrics (the
-        // honest answer) rather than the per-bar optimistic one.
-        let elapsed = start.elapsed().as_secs_f64().max(0.01);
-        let bps = bytes_copied as f64 / elapsed;
-        let fps = files_copied as f64 / elapsed;
-        let bytes_eta = ((total_bytes - bytes_copied) as f64 / bps).max(0.0);
-        let files_eta = ((total_files - files_copied) as f64 / fps).max(0.0);
-        let eta = bytes_eta.max(files_eta);
-
-        pb_bytes.set_position(bytes_copied);
-        pb_bytes.set_message(format!(
-            "{:>10} / {:<10} @ {:>10}/s  ETA {}",
-            human_bytes(bytes_copied),
-            human_bytes(total_bytes),
-            human_bytes(bps as u64),
-            human_secs(eta as u64),
-        ));
-
-        pb_files.set_position(files_copied);
-        pb_files.set_message(format!(
-            "{:>10} / {:<10} @ {:>8.0}/s  ETA {}",
+        // Chunked copy with intra-file progress updates. std::fs::copy is
+        // tempting (one syscall, uses macOS copyfile) but for files larger
+        // than a few hundred MB the bar freezes for the whole copy duration
+        // and re-animates with a sudden jump at the end. Win 7 install.wim
+        // is 2+ GB = a one-minute freeze. Bad UX.
+        copy_chunked(
+            &src,
+            &dest,
+            &pb_bytes,
+            &pb_files,
+            &mut bytes_copied,
+            total_bytes,
             files_copied,
             total_files,
-            fps,
-            human_secs(eta as u64),
-        ));
+            start,
+        )
+        .with_context(|| format!("copy {} -> {}", src.display(), dest.display()))?;
+
+        files_copied += 1;
+        update_messages(
+            &pb_bytes,
+            &pb_files,
+            bytes_copied,
+            total_bytes,
+            files_copied,
+            total_files,
+            start,
+        );
     }
 
     // Single sync at the end. Per PERFORMANCE.md, per-file fsync is the
@@ -241,6 +239,89 @@ fn copy_iso_contents(iso_mount: &Path, usb_mount: &Path) -> Result<()> {
     pb_bytes.finish();
     pb_files.finish();
     Ok(())
+}
+
+/// Copy a single file in 4 MiB chunks, updating the byte progress bar
+/// between chunks so the user sees motion during multi-GB writes.
+#[allow(clippy::too_many_arguments)]
+fn copy_chunked(
+    src: &Path,
+    dest: &Path,
+    pb_bytes: &ProgressBar,
+    pb_files: &ProgressBar,
+    bytes_copied: &mut u64,
+    total_bytes: u64,
+    files_copied: u64,
+    total_files: u64,
+    start: Instant,
+) -> Result<()> {
+    const CHUNK: usize = 4 * 1024 * 1024;
+    let mut src_f = File::open(src).with_context(|| format!("open {}", src.display()))?;
+    let mut dest_f = File::create(dest).with_context(|| format!("create {}", dest.display()))?;
+    let mut buf = vec![0u8; CHUNK];
+    loop {
+        let n = src_f.read(&mut buf).context("read from ISO")?;
+        if n == 0 {
+            break;
+        }
+        dest_f
+            .write_all(&buf[..n])
+            .context("write to USB")?;
+        *bytes_copied += n as u64;
+        update_messages(
+            pb_bytes,
+            pb_files,
+            *bytes_copied,
+            total_bytes,
+            files_copied,
+            total_files,
+            start,
+        );
+    }
+    Ok(())
+}
+
+fn update_messages(
+    pb_bytes: &ProgressBar,
+    pb_files: &ProgressBar,
+    bytes_copied: u64,
+    total_bytes: u64,
+    files_copied: u64,
+    total_files: u64,
+    start: Instant,
+) {
+    let elapsed = start.elapsed().as_secs_f64().max(0.01);
+    let bps = bytes_copied as f64 / elapsed;
+    let fps = files_copied as f64 / elapsed;
+    let bytes_eta = if bps > 0.0 {
+        (total_bytes - bytes_copied) as f64 / bps
+    } else {
+        0.0
+    };
+    let files_eta = if fps > 0.0 {
+        (total_files - files_copied) as f64 / fps
+    } else {
+        0.0
+    };
+    let eta = bytes_eta.max(files_eta);
+
+    pb_bytes.set_position(bytes_copied);
+    pb_bytes.set_message(format!(
+        "{:>10} / {:<10} @ {:>10}/s  ETA {}",
+        human_bytes(bytes_copied),
+        human_bytes(total_bytes),
+        human_bytes(bps as u64),
+        human_secs(eta as u64),
+    ));
+
+    pb_files.set_position(files_copied);
+    pb_files.set_message(format!(
+        "{:>10} / {:<10} @ {:>8.0}/s  ETA {}",
+        files_copied,
+        total_files,
+        fps,
+        human_secs(eta as u64),
+    ));
 }
 
 fn human_bytes(bytes: u64) -> String {
