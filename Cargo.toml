@@ -1,0 +1,35 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/usbwin",
+    "crates/usbwin-core",
+    "crates/usbwin-iso",
+    "crates/usbwin-disk",
+    "crates/usbwin-boot",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "MIT"
+repository = "https://github.com/jmappleby/usbwin"
+authors = ["John Appleby <johnmichaelappleby@gmail.com>"]
+
+[workspace.dependencies]
+anyhow = "1"
+thiserror = "1"
+clap = { version = "4", features = ["derive"] }
+nix = { version = "0.27", features = ["fs", "ioctl", "mount"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+usbwin-core = { path = "crates/usbwin-core" }
+usbwin-iso  = { path = "crates/usbwin-iso" }
+usbwin-disk = { path = "crates/usbwin-disk" }
+usbwin-boot = { path = "crates/usbwin-boot" }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

@@ -1,0 +1,16 @@
+/target
+**/*.rs.bk
+Cargo.lock.bak
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# build artifacts from boot-asm
+/boot-asm/build/
+/boot-asm/*.bin
+/boot-asm/*.lst
+/boot-asm/*.o
+
+# local-only ms-sys blobs (never check these in — see PROVENANCE.md)
+/tests/fixtures/mssys/

@@ -1,0 +1,14 @@
+[package]
+name = "usbwin-iso"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "ISO9660 inspection and boot-mode auto-classification for usbwin"
+
+[dependencies]
+usbwin-core.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
