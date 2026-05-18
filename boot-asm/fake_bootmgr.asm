@@ -19,6 +19,9 @@ BITS 16
 ORG 0
 
 start:
+    ; Set DS = CS so lodsb reads from our own segment.
+    push cs
+    pop ds
     mov si, msg
 .loop:
     lodsb

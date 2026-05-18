@@ -51,6 +51,32 @@ The first 440 bytes of `/dev/rdiskN` are the MBR boot code. Same idea but simple
 
 > A separate XP-era PBR (`fat32_pbr_xp.asm`, loading `NTLDR` instead of `bootmgr`) will land alongside the dedicated `--type=windows-xp` mode in v0.4. The Win 7 PBR is *not* a drop-in replacement for the XP case — see `docs/ARCHITECTURE.md` § MVP target for why XP is its own path.
 
+## A note on single-sector vs multi-sector PBRs
+
+Microsoft's production FAT32 PBR for Win 7 / 8 / 10 (the one `ms-sys --fat32pe` writes) is **multi-sector**. It places code at three offsets inside the first 16 reserved sectors of the partition:
+
+| Offset    | Sector | What lives there                    |
+|-----------|--------|-------------------------------------|
+| `0x0000`  | 0      | Primary boot code + JMP + BPB area  |
+| `0x03F0`  | 0      | Volume label and continuation       |
+| `0x1800`  | 12     | Tertiary boot code                  |
+
+A "naive" single-sector PBR that fits all logic into bytes 90..509 of sector 0 will not boot Microsoft's actual `bootmgr` correctly — that machinery expects to be called from a boot environment Microsoft set up across all three sectors.
+
+usbwin's `fat32_pbr.asm` is currently a single-sector clean-room implementation that:
+
+- Passes the QEMU smoke test against a tiny stand-in `BOOTMGR` (prints "USBWIN OK\r\n" then halts).
+- Has **not** been verified against Microsoft's real `bootmgr` on real hardware.
+
+The follow-up work for v0.2 is to either:
+
+1. Extend `fat32_pbr.asm` into a multi-sector layout matching Microsoft's, or
+2. Write a single-sector PBR that's smart enough to bootstrap the rest of Microsoft's `bootmgr` correctly (some clean-room reimplementations of FAT32 PE do this).
+
+The QEMU harness from `tests/qemu_pbr.rs` validates the single-sector path today. Validating multi-sector requires either real Windows 7 ISO content in the test image (legally fuzzy and large) or a multi-sector synthetic test (cleaner; tracked as a follow-up).
+
+See `docs/FIELD_FINDINGS_2026_05_18.md` for the empirical investigation that established these multi-sector facts.
+
 Build:
 
 ```sh

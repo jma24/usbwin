@@ -8,6 +8,26 @@ The bytes shipped in `target/release/usbwin` are produced at build time from the
 
 `boot-asm/Makefile` invokes `nasm` and emits 512-byte raw binaries. `crates/usbwin-boot/build.rs` runs the makefile and `include_bytes!`s the results into the compiled binary. There is no external dependency at runtime; NASM is a build-time tool only.
 
+## Clean-room development protocol
+
+The boot record source files are developed under a strict clean-room protocol. Anyone working on `boot-asm/*.asm` (or on `crates/usbwin-boot/src/pbr.rs`) may consult **only** these sources:
+
+**Allowed references:**
+- Microsoft's *FAT32 File System Specification* (FATGEN103.doc / FATGEN102.pdf, publicly published by Microsoft in 2000 and republished many times since).
+- IBM/Phoenix *BIOS Interface Reference* and equivalent public BIOS documentation (covering INT 10h, INT 13h, INT 13h extensions, the boot process).
+- The OSDev wiki's algorithmic descriptions (text and pseudocode only, never their example code blocks).
+- Generic textbook x86 assembly references (e.g. Intel software developer manuals).
+- Output bytes from third-party tools, used **for verification only** (see "Cross-check" below).
+
+**Disallowed references:**
+- Source code from ms-sys, syslinux, GRUB, GRUB4DOS, Linux kernel boot code, BSD bootloaders, or any other open-source bootloader project.
+- Any leaked, reverse-engineered, or disassembled Microsoft, Apple, or third-party proprietary code.
+- Stack Overflow or blog-post code that itself derives from any of the above (when in doubt, treat external code blocks as tainted and use only the prose/pseudocode portions).
+
+The rule is: **read others' output for validation; derive nothing from others' source.** Validation tells us "is the byte we produced equivalent to what's already in the field?" Derivation imports authorship questions we don't want to inherit.
+
+When in doubt about a reference's status, stop and document the question in a PR comment rather than incorporating uncertain code.
+
 ## Cross-check: ms-sys equivalence test
 
 [ms-sys](https://ms-sys.sourceforge.net/) ships boot record blobs that are functionally identical (and historically derived from Microsoft binaries). We do **not** redistribute ms-sys's bytes. We do, however, run an optional test that asserts our NASM output is byte-equal to ms-sys's reference blobs:

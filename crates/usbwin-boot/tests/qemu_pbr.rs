@@ -60,7 +60,11 @@ fn fat32_pbr_loads_bootmgr_in_qemu() {
 }
 
 fn check_dependencies() -> Result<(), String> {
-    for tool in &["nasm", "qemu-system-i386", "hdiutil", "newfs_msdos"] {
+    // mtools (mformat, mcopy) lets us build a canonical FAT32 image without
+    // going through macOS's FAT32 driver, which writes some non-trivial
+    // metadata (.fseventsd directory, async writes) that complicates the
+    // round-trip test.
+    for tool in &["nasm", "qemu-system-i386", "mformat", "mcopy"] {
         which(tool).map_err(|e| format!("missing `{tool}`: {e}"))?;
     }
     Ok(())
@@ -100,91 +104,42 @@ fn build_fake_bootmgr(boot_asm: &Path) -> Result<PathBuf, String> {
 }
 
 fn create_fat32_image(image: &Path, fake_bootmgr: &Path) -> Result<(), String> {
-    // 1. Allocate the raw image.
+    // 1. Allocate the raw image as zeros.
     let f = std::fs::File::create(image).map_err(|e| format!("create image: {e}"))?;
     f.set_len(IMAGE_BYTES).map_err(|e| format!("set_len: {e}"))?;
     drop(f);
 
-    // 2. Attach as a loopback device (without mounting; we want to newfs it first).
-    let attach = Command::new("hdiutil")
-        .args(["attach", "-nomount", "-imagekey", "diskimage-class=CRawDiskImage"])
+    // 2. Format as FAT32 via mformat (does not require root, no mount, no
+    //    macOS auto-mount races, no .fseventsd metadata to confuse the
+    //    bootloader test).
+    let fmt = Command::new("mformat")
+        .args(["-F", "-i"])
         .arg(image)
+        .args(["-v", "USBWIN", "::"])
         .output()
-        .map_err(|e| format!("hdiutil attach: {e}"))?;
-    if !attach.status.success() {
-        return Err(format!(
-            "hdiutil attach failed: {}",
-            String::from_utf8_lossy(&attach.stderr)
-        ));
-    }
-    let stdout = String::from_utf8_lossy(&attach.stdout);
-    let dev = stdout
-        .lines()
-        .next()
-        .and_then(|l| l.split_whitespace().next())
-        .ok_or_else(|| format!("could not parse hdiutil attach output: {stdout}"))?
-        .trim()
-        .to_string();
-
-    // 3. Format as FAT32. Detach + reattach (now mounting) so we can copy
-    //    the fake bootmgr in.
-    let fmt = Command::new("newfs_msdos")
-        .args(["-F", "32", "-v", "USBWIN", &dev])
-        .output()
-        .map_err(|e| format!("newfs_msdos: {e}"))?;
+        .map_err(|e| format!("mformat: {e}"))?;
     if !fmt.status.success() {
-        let _ = Command::new("hdiutil").args(["detach", &dev]).output();
         return Err(format!(
-            "newfs_msdos failed: {}",
+            "mformat failed: {}",
             String::from_utf8_lossy(&fmt.stderr)
         ));
     }
 
-    // Detach to flush.
-    let _ = Command::new("hdiutil").args(["detach", &dev]).output();
-
-    // Re-attach with mount.
-    let mount = Command::new("hdiutil")
-        .args(["attach"])
+    // 3. Copy fake bootmgr to root as BOOTMGR.
+    let cp = Command::new("mcopy")
+        .arg("-i")
         .arg(image)
-        .output()
-        .map_err(|e| format!("hdiutil attach (mount): {e}"))?;
-    if !mount.status.success() {
-        return Err(format!(
-            "hdiutil attach (mount) failed: {}",
-            String::from_utf8_lossy(&mount.stderr)
-        ));
-    }
-    let mount_out = String::from_utf8_lossy(&mount.stdout).to_string();
-    // Find the mount point: usually /Volumes/USBWIN.
-    let mount_point = mount_out
-        .lines()
-        .find_map(|l| {
-            l.split_whitespace()
-                .find(|p| p.starts_with("/Volumes/"))
-                .map(|s| s.to_string())
-        })
-        .unwrap_or_else(|| "/Volumes/USBWIN".to_string());
-
-    // 4. Copy fake_bootmgr to /Volumes/USBWIN/BOOTMGR
-    let cp = Command::new("cp")
         .arg(fake_bootmgr)
-        .arg(format!("{mount_point}/BOOTMGR"))
+        .arg("::BOOTMGR")
         .output()
-        .map_err(|e| format!("cp: {e}"))?;
+        .map_err(|e| format!("mcopy: {e}"))?;
     if !cp.status.success() {
         return Err(format!(
-            "cp failed: {}",
+            "mcopy failed: {}",
             String::from_utf8_lossy(&cp.stderr)
         ));
     }
 
-    // 5. Unmount + detach.
-    let dev_root = dev.replace("/dev/disk", "/dev/disk"); // identity; placeholder for clarity
-    let _ = Command::new("hdiutil")
-        .args(["detach"])
-        .arg(&dev_root)
-        .output();
     Ok(())
 }
 
@@ -213,17 +168,20 @@ fn boot_under_qemu(image: &Path) -> Result<String, String> {
     use std::io::Read;
     use std::process::Stdio;
 
-    let drive = format!("file={},format=raw,if=floppy", image.display());
+    // Attach as an HDD (if=ide). INT 13h extension function 0x42 (which
+    // our PBR uses) is only valid for drive numbers >= 0x80 (HDDs); BIOS
+    // refuses it on floppies, so we must not use if=floppy here.
+    let drive = format!("file={},format=raw,if=ide", image.display());
     let mut child = Command::new("qemu-system-i386")
         .args(["-drive", &drive])
         .args([
-            "-boot", "a",
+            "-boot", "c",
             "-serial", "stdio",
             "-display", "none",
             "-no-reboot",
         ])
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::inherit())
         .spawn()
         .map_err(|e| format!("spawning qemu: {e}"))?;
 
