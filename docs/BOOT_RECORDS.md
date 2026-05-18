@@ -51,6 +51,17 @@ The first 440 bytes of `/dev/rdiskN` are the MBR boot code. Same idea but simple
 
 > A separate XP-era PBR (`fat32_pbr_xp.asm`, loading `NTLDR` instead of `bootmgr`) will land alongside the dedicated `--type=windows-xp` mode in v0.4. The Win 7 PBR is *not* a drop-in replacement for the XP case — see `docs/ARCHITECTURE.md` § MVP target for why XP is its own path.
 
+## PBR error codes
+
+If the FAT32 PBR fails before chain-loading `bootmgr`, it prints a **single character** to BIOS teletype (screen) and COM1 (serial), then halts. The character is the error code:
+
+| Code | Meaning                                                    | Likely cause                                              |
+|------|------------------------------------------------------------|-----------------------------------------------------------|
+| `1`  | BOOTMGR not found in the FAT32 root directory             | The Windows installer files weren't fully copied to root, or the partition's BPB doesn't match the actual partition geometry (the bug `splice_fat32_pbr` is meant to prevent). |
+| `2`  | INT 13h disk read returned with carry set                  | Most often: PBR tried to read past end of disk because of bad LBA math (e.g. a stale BPB), buffer overflow corrupted boot code, or the BIOS doesn't support INT 13h ext 0x42 on this drive. |
+
+Single-character codes instead of full English strings because we have ~420 bytes of boot code to fit in the FAT32 PBR sector and every byte counts. The legend is here.
+
 ## A note on single-sector vs multi-sector PBRs
 
 Microsoft's production FAT32 PBR for Win 7 / 8 / 10 (the one `ms-sys --fat32pe` writes) is **multi-sector**. It places code at three offsets inside the first 16 reserved sectors of the partition:

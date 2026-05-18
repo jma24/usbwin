@@ -11,9 +11,14 @@
 ;
 ; Algorithm:
 ;   1. Parse BPB -> FAT_LBA, DATA_LBA
-;   2. Walk root directory cluster chain looking for "BOOTMGR    "
-;   3. Walk BOOTMGR's cluster chain, loading to 2000:0000
-;   4. Far-jump to 2000:0000 with DL = boot drive
+;   2. Walk root directory ONE SECTOR AT A TIME, scanning each for
+;      "BOOTMGR    " (the 11-byte 8.3 form). Reading a whole cluster at
+;      once into a single-sector buffer corrupts our own boot code when
+;      sec_per_clus > 1 (real Win 7 USBs use sec_per_clus = 64).
+;   3. When found, walk BOOTMGR's cluster chain, loading to 2000:0000.
+;      Each sector advances ES by 0x20 (= 512 bytes linear) so writes
+;      stride forward through memory without DI wrapping.
+;   4. Far-jump to 2000:0000 with DL = boot drive.
 ;
 ; Clean-room: written from FAT32 spec (FATGEN103) + Phoenix BIOS docs.
 ; See docs/PROVENANCE.md.
@@ -29,7 +34,7 @@ ORG 0x7C00
 %define BPB_FATSz32      0x24
 %define BPB_RootClus     0x2C
 
-%define BUF              0x0500       ; 1-sector scratch
+%define BUF              0x0500       ; 1-sector scratch (max 512 bytes)
 %define DAP              0x0700       ; disk address packet
 %define BOOT_DRV         0x7B00       ; byte
 %define DATA_LBA         0x7B04       ; dword
@@ -68,34 +73,36 @@ body:
     jnz .dmul
     mov [DATA_LBA], eax
 
-    ; Walk root directory.
+    ; Walk root directory, EAX = current cluster.
     mov eax, [0x7C00 + BPB_RootClus]
 
 .dir_cluster:
-    push eax
+    ; Compute LBA of cluster's first sector + count of sectors in cluster.
+    push eax                          ; save dir cluster
+    sub eax, 2
+    movzx ecx, byte [0x7C00 + BPB_SecPerClus]
+    push ecx                          ; save sec_per_clus
+    mul ecx
+    add eax, [DATA_LBA]
+    mov [READ_LBA], eax
+    pop ecx                           ; ECX = sectors remaining in cluster
+
+.dir_sector:
+    push cx                           ; save sectors-remaining (2B)
     xor bx, bx
     mov es, bx
     mov di, BUF
-    call read_cluster
-    pop eax
-
-    ; CX = number of dir entries in this cluster = (sec_per_clus * BytsPerSec) / 32
-    movzx cx, byte [0x7C00 + BPB_SecPerClus]
-    imul cx, word [0x7C00 + BPB_BytsPerSec]
-    shr cx, 5
-
+    call read_one_sector
     mov si, BUF
+    mov cx, 16                        ; 16 entries per 512-byte sector
 .scan:
-    test cx, cx
-    jz .next_dir
     mov al, [si]
     test al, al
-    jz .nf
+    jz .nf                            ; end-of-dir marker; stack imbalance OK (we halt)
     cmp al, 0xE5
     je .skip
     cmp byte [si + 11], 0x0F
     je .skip
-
     push si
     push cx
     mov di, name
@@ -103,32 +110,45 @@ body:
     repe cmpsb
     pop cx
     pop si
-    je .match
+    je .found
 .skip:
     add si, 32
     dec cx
-    jmp .scan
+    jnz .scan
 
-.next_dir:
+    ; Sector exhausted; advance to next sector in cluster.
+    pop cx                            ; restore sectors-remaining
+    inc dword [READ_LBA]
+    dec cx
+    jnz .dir_sector
+
+    ; Cluster exhausted; follow chain.
+    pop eax                           ; dir cluster
     call next_cluster
     cmp eax, 0x0FFFFFF8
     jb .dir_cluster
+    ; Walked off end of root without finding BOOTMGR; stack balanced here.
 .nf:
-    mov si, msg_nf
+    mov al, '1'                       ; error code 1: BOOTMGR not in root
     jmp die
 
-.match:
-    ; SI -> dir entry. cluster = (high<<16) | low.
+.found:
+    ; SI -> dir entry. Stack has [dir_cluster (4B), sectors-remaining (2B)].
+    ; Discard them before reusing the stack in .load.
+    add sp, 6
+
+    ; cluster = (high<<16) | low
     movzx eax, word [si + 26]
     movzx ebx, word [si + 20]
     shl ebx, 16
     or eax, ebx
 
-    ; Load bootmgr to BOOTMGR_SEG:0
+    ; Load BOOTMGR cluster chain. ES advances 0x20 per sector (= 512 bytes
+    ; in linear address); DI stays 0. This keeps us striding forward
+    ; through memory without DI wrap.
     mov bx, BOOTMGR_SEG
     mov es, bx
     xor di, di
-
 .load:
     push eax
     call read_cluster
@@ -140,18 +160,22 @@ body:
     mov dl, [BOOT_DRV]
     jmp BOOTMGR_SEG:0x0000
 
-; ----- read_cluster: EAX = cluster, ES:DI = dest. Advances DI.
+; ----- read_cluster: EAX = cluster, ES:DI = dest (DI must be 0).
+;       Reads sec_per_clus sectors. ES advances by 0x20 per sector so we
+;       stride forward through memory without overflowing DI.
 read_cluster:
     sub eax, 2
     movzx ecx, byte [0x7C00 + BPB_SecPerClus]
-    mul ecx                            ; EDX:EAX = sector offset (EDX = 0)
+    mul ecx                            ; EDX:EAX = sector offset
     add eax, [DATA_LBA]
     mov [READ_LBA], eax
 .lr:
     push cx
     call read_one_sector
     inc dword [READ_LBA]
-    add di, [0x7C00 + BPB_BytsPerSec]
+    mov bx, es
+    add bx, 0x20                       ; advance ES by 512 bytes (linear)
+    mov es, bx
     pop cx
     loop .lr
     ret
@@ -174,7 +198,7 @@ read_one_sector:
     jc .err
     ret
 .err:
-    mov si, msg_io
+    mov al, '2'                       ; error code 2: INT 13h read failed
     jmp die
 
 ; ----- next_cluster: EAX in -> EAX = FAT[in] & 0x0FFFFFFF.
@@ -206,26 +230,21 @@ next_cluster:
     pop ecx
     ret
 
-print_si:
-.l: lodsb
-    test al, al
-    jz .d
+; die: AL = single-character error code to print via BIOS teletype.
+; Also pulses COM1 with the same character for QEMU/serial diagnostics.
+; Error code legend (see docs/BOOT_RECORDS.md):
+;   '1' = BOOTMGR not found in FAT32 root directory
+;   '2' = INT 13h disk read failed
+die:
     mov ah, 0x0E
     mov bx, 7
     int 0x10
     mov dx, 0x3F8
     out dx, al
-    jmp .l
-.d: ret
-
-die:
-    call print_si
 .h: hlt
     jmp .h
 
 name:    db 'BOOTMGR    '
-msg_nf:  db 'BOOTMGR?', 13, 10, 0
-msg_io:  db 'IO err', 13, 10, 0
 
     times 510 - ($ - $$) db 0
     dw 0xAA55

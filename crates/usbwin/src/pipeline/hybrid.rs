@@ -152,10 +152,10 @@ fn progress_bar(total: u64, op: &str) -> ProgressBar {
     let pb = ProgressBar::new(total);
     pb.set_style(
         ProgressStyle::with_template(
-            "{prefix:>10}  {bar:40.cyan/blue} {bytes}/{total_bytes} ({bytes_per_sec}, ETA {eta})",
+            "  {prefix:<6} {wide_bar:.cyan/blue} {bytes:>10}/{total_bytes:<10} @ {bytes_per_sec:>10}  ETA {eta:>5}",
         )
         .unwrap()
-        .progress_chars("=>-"),
+        .progress_chars("█▓▒░ "),
     );
     pb.set_prefix(op.to_string());
     pb.enable_steady_tick(Duration::from_millis(100));

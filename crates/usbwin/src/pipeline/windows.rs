@@ -21,7 +21,7 @@
 //!   11. Eject.
 
 use anyhow::{anyhow, bail, Context, Result};
-use indicatif::{ProgressBar, ProgressStyle};
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -157,21 +157,31 @@ fn find_mount_for_label(label: &str) -> Option<PathBuf> {
 fn copy_iso_contents(iso_mount: &Path, usb_mount: &Path) -> Result<()> {
     let entries = walk_files(iso_mount)?;
     let total_bytes: u64 = entries.iter().map(|e| e.size).sum();
-    let total_files = entries.len() as u64;
+    let total_files = entries.iter().filter(|e| !e.is_dir).count() as u64;
 
-    let pb = ProgressBar::new(total_bytes);
-    pb.set_style(
-        ProgressStyle::with_template(
-            "{prefix:>10}  {bar:40.cyan/blue} {bytes}/{total_bytes} ({bytes_per_sec}, ETA {eta}, {pos}/{len} bytes, {msg})",
-        )
-        .unwrap()
-        .progress_chars("=>-"),
-    );
-    pb.set_prefix("copying");
-    pb.enable_steady_tick(Duration::from_millis(100));
-    pb.set_message(format!("0/{total_files} files"));
+    // Two parallel bars. install.wim dominates the byte count and finishes
+    // long before the thousands of small files do; one bar can't honestly
+    // represent both. Show both so the user sees what's actually happening.
+    let multi = MultiProgress::new();
+    let bar_style = ProgressStyle::with_template(
+        "  {prefix:<6} {wide_bar:.cyan/blue} {msg}",
+    )
+    .unwrap()
+    .progress_chars("█▓▒░ ");
 
-    // Create directories first so per-file writes don't have to mkdir.
+    let pb_bytes = multi.add(ProgressBar::new(total_bytes));
+    pb_bytes.set_style(bar_style.clone());
+    pb_bytes.set_prefix("bytes");
+    pb_bytes.enable_steady_tick(Duration::from_millis(100));
+
+    let pb_files = multi.add(ProgressBar::new(total_files));
+    pb_files.set_style(bar_style);
+    pb_files.set_prefix("files");
+    pb_files.enable_steady_tick(Duration::from_millis(100));
+
+    // Pre-create directories so per-file copies don't have to mkdir each
+    // time. Per FIELD_FINDINGS, the per-file overhead is the bottleneck;
+    // anything we hoist out of the inner loop helps.
     for entry in &entries {
         if entry.is_dir {
             let dest = usb_mount.join(entry.rel.as_path());
@@ -180,6 +190,7 @@ fn copy_iso_contents(iso_mount: &Path, usb_mount: &Path) -> Result<()> {
         }
     }
 
+    let start = std::time::Instant::now();
     let mut bytes_copied = 0u64;
     let mut files_copied = 0u64;
     for entry in &entries {
@@ -188,23 +199,73 @@ fn copy_iso_contents(iso_mount: &Path, usb_mount: &Path) -> Result<()> {
         }
         let src = iso_mount.join(entry.rel.as_path());
         let dest = usb_mount.join(entry.rel.as_path());
-        if let Some(parent) = dest.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
         std::fs::copy(&src, &dest)
             .with_context(|| format!("copy {} -> {}", src.display(), dest.display()))?;
         bytes_copied += entry.size;
         files_copied += 1;
-        pb.set_position(bytes_copied);
-        pb.set_message(format!("{files_copied}/{total_files} files"));
+
+        // Update the messages on each bar with rate + ETA. We compute these
+        // ourselves rather than relying on indicatif's {bytes_per_sec}/{eta}
+        // because we want the eta to be the SLOWER of the two metrics (the
+        // honest answer) rather than the per-bar optimistic one.
+        let elapsed = start.elapsed().as_secs_f64().max(0.01);
+        let bps = bytes_copied as f64 / elapsed;
+        let fps = files_copied as f64 / elapsed;
+        let bytes_eta = ((total_bytes - bytes_copied) as f64 / bps).max(0.0);
+        let files_eta = ((total_files - files_copied) as f64 / fps).max(0.0);
+        let eta = bytes_eta.max(files_eta);
+
+        pb_bytes.set_position(bytes_copied);
+        pb_bytes.set_message(format!(
+            "{:>10} / {:<10} @ {:>10}/s  ETA {}",
+            human_bytes(bytes_copied),
+            human_bytes(total_bytes),
+            human_bytes(bps as u64),
+            human_secs(eta as u64),
+        ));
+
+        pb_files.set_position(files_copied);
+        pb_files.set_message(format!(
+            "{:>10} / {:<10} @ {:>8.0}/s  ETA {}",
+            files_copied,
+            total_files,
+            fps,
+            human_secs(eta as u64),
+        ));
     }
 
-    // Single sync to flush the FS cache. macOS's USB stack will then take
-    // care of pushing bytes to flash when we unmount/eject.
+    // Single sync at the end. Per PERFORMANCE.md, per-file fsync is the
+    // UNetbootin trap that took it to 2 files/sec.
     let _ = std::process::Command::new("sync").status();
 
-    pb.finish_with_message(format!("{files_copied}/{total_files} files"));
+    pb_bytes.finish();
+    pb_files.finish();
     Ok(())
+}
+
+fn human_bytes(bytes: u64) -> String {
+    const KIB: u64 = 1024;
+    const MIB: u64 = KIB * 1024;
+    const GIB: u64 = MIB * 1024;
+    if bytes >= GIB {
+        format!("{:.2} GiB", bytes as f64 / GIB as f64)
+    } else if bytes >= MIB {
+        format!("{:.1} MiB", bytes as f64 / MIB as f64)
+    } else if bytes >= KIB {
+        format!("{:.1} KiB", bytes as f64 / KIB as f64)
+    } else {
+        format!("{} B", bytes)
+    }
+}
+
+fn human_secs(s: u64) -> String {
+    if s >= 3600 {
+        format!("{}h{:02}m", s / 3600, (s % 3600) / 60)
+    } else if s >= 60 {
+        format!("{}m{:02}s", s / 60, s % 60)
+    } else {
+        format!("{}s", s)
+    }
 }
 
 struct CopyEntry {
