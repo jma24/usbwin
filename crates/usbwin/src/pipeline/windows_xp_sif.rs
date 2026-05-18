@@ -186,6 +186,36 @@ impl Sif {
     }
 }
 
+/// Declare a WaitBT/Wait4UFD-style waiter driver in the SIF: copy the
+/// .sys filename into [SourceDisksFiles] (so setup knows it exists),
+/// add it to [BootBusExtenders.Load] (so it loads at boot), and add a
+/// descriptive entry to [BootBusExtenders].
+///
+/// `key` is the driver name without ".sys" (e.g. "WaitBT", "Wait4UFD").
+/// `description` is the human-readable label for [BootBusExtenders].
+pub fn declare_waiter(sif: &mut Sif, key: &str, description: &str) -> Result<(), String> {
+    let sys_filename = format!("{key}.sys");
+    // [SourceDisksFiles]: tell setup the file exists. The trailing column
+    // pattern matches what newer SIF entries use: `1,,,,,,_x,4,1,3,,1,4`
+    // is the "BootBusExtenders flavor" tag that XP setup recognizes.
+    sif.ensure_kvp(
+        "SourceDisksFiles",
+        &sys_filename,
+        "1,,,,,,_x,4,1,3,,1,4",
+    )?;
+    // [BootBusExtenders.Load]: load at boot.
+    sif.ensure_kvp("BootBusExtenders.Load", key, &sys_filename)?;
+    // [BootBusExtenders]: descriptive entry. The third column "files.none"
+    // is a stub file-group; the waiter isn't part of any larger driver
+    // package so there's no specific files.<x> section to reference.
+    sif.ensure_kvp(
+        "BootBusExtenders",
+        key,
+        &format!(r#""{description}",files.none,{key}"#),
+    )?;
+    Ok(())
+}
+
 /// Apply the WinSetupFromUSB-style modifications: move 5 USB drivers from
 /// `InputDevicesSupport.Load` to `BootBusExtenders.Load`, and ensure each
 /// has a descriptive entry in `BootBusExtenders` (the non-`.Load` section).

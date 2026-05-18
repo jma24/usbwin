@@ -23,22 +23,38 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use usbwin_core::{Device, WritePlan};
+use usbwin_core::{Config, Device, WritePlan};
 use usbwin_disk::raw::{OpenMode, RawDevice};
 use usbwin_disk::DeviceInfo;
 
 use super::diskutil;
 use super::windows_xp_sif;
+use super::windows_xp_unattended;
 
 const SECTOR_SIZE: u64 = 512;
 
-pub fn run(plan: &WritePlan, info: &DeviceInfo, _verify: bool) -> Result<()> {
+pub fn run(plan: &WritePlan, info: &DeviceInfo, config: &Config) -> Result<()> {
     let bsd_path = info.path.replace("/dev/r", "/dev/");
     let partition_raw = format!("{}s1", info.path);
     let partition_bsd = format!("{bsd_path}s1");
 
     // Fail fast if ms-sys isn't present (boot-records are mandatory for XP).
     let ms_sys = diskutil::find_ms_sys()?;
+
+    // Validate optional inputs up front so we don't get halfway through a
+    // write and discover a missing file.
+    if let Some(dir) = &config.xp_waiters_dir {
+        for f in &["WaitBT.sys", "Wait4UFD.sys"] {
+            let p = dir.join(f);
+            if !p.exists() {
+                bail!(
+                    "--xp-waiters directory {} is missing {f}. Both WaitBT.sys and \
+                     Wait4UFD.sys must be present.",
+                    dir.display()
+                );
+            }
+        }
+    }
 
     diskutil::unmount_disk(&bsd_path).context("unmount before partition write")?;
     write_mbr_sector(info)?;
@@ -61,7 +77,13 @@ pub fn run(plan: &WritePlan, info: &DeviceInfo, _verify: bool) -> Result<()> {
     copy_result.context("copying XP ISO contents to USB")?;
 
     // Apply the WinSetupFromUSB txtsetup.sif modification on the copied file.
-    apply_txtsetup_mods(&usb_mount).context("modifying TXTSETUP.SIF on USB")?;
+    apply_txtsetup_mods(&usb_mount, config.xp_waiters_dir.as_deref())
+        .context("modifying TXTSETUP.SIF on USB")?;
+
+    // Optional: write the unattended answer file.
+    if config.xp_unattended {
+        write_unattended(&usb_mount, config).context("writing winnt.sif")?;
+    }
 
     diskutil::unmount_disk(&bsd_path).context("unmount before boot records")?;
 
@@ -85,7 +107,7 @@ pub fn run(plan: &WritePlan, info: &DeviceInfo, _verify: bool) -> Result<()> {
     Ok(())
 }
 
-fn apply_txtsetup_mods(usb_mount: &Path) -> Result<()> {
+fn apply_txtsetup_mods(usb_mount: &Path, waiters_dir: Option<&Path>) -> Result<()> {
     // FAT32 is case-insensitive but case-preserving. The ISO often has
     // "I386/TXTSETUP.SIF" (uppercase). Try a couple of common spellings.
     let candidates = [
@@ -97,6 +119,7 @@ fn apply_txtsetup_mods(usb_mount: &Path) -> Result<()> {
         .iter()
         .find(|p| p.exists())
         .ok_or_else(|| anyhow!("TXTSETUP.SIF not found on USB at any of {candidates:?}; is this really an XP install ISO?"))?;
+    let i386_dir = sif_path.parent().unwrap();
 
     let original = std::fs::read_to_string(sif_path)
         .with_context(|| format!("reading {}", sif_path.display()))?;
@@ -110,14 +133,57 @@ fn apply_txtsetup_mods(usb_mount: &Path) -> Result<()> {
              one of usbehci/usbohci/usbuhci/usbhub/usbstor."
         );
     }
+
+    // Chunk 6: optionally copy WaitBT.sys / Wait4UFD.sys into I386/ and
+    // declare them in the SIF. Use BSD-style copy so timestamps don't matter.
+    let mut waiters_installed = 0;
+    if let Some(src_dir) = waiters_dir {
+        for (key, description) in &[
+            ("WaitBT", "USB Boot Wait Driver"),
+            ("Wait4UFD", "USB Flash Drive Settle Driver"),
+        ] {
+            let src = src_dir.join(format!("{key}.sys"));
+            let dest = i386_dir.join(format!("{key}.sys"));
+            std::fs::copy(&src, &dest)
+                .with_context(|| format!("copying {} to {}", src.display(), dest.display()))?;
+            windows_xp_sif::declare_waiter(&mut sif, key, description)
+                .map_err(|e| anyhow!("declaring waiter {key} in SIF: {e}"))?;
+            waiters_installed += 1;
+        }
+    }
+
     let modified = sif.render();
     std::fs::write(sif_path, modified)
         .with_context(|| format!("writing modified {}", sif_path.display()))?;
     println!(
-        "usbwin: modified {} (moved {} USB drivers into BootBusExtenders.Load)",
+        "usbwin: modified {} (moved {} USB drivers; installed {} waiter drivers)",
         sif_path.display(),
-        moved
+        moved,
+        waiters_installed
     );
+    Ok(())
+}
+
+fn write_unattended(usb_mount: &Path, config: &Config) -> Result<()> {
+    let opts = windows_xp_unattended::UnattendedOptions {
+        product_key: config.xp_product_key.clone(),
+        computer_name: config.xp_computer_name.clone(),
+        full_name: config.xp_full_name.clone(),
+    };
+    let body = windows_xp_unattended::generate(&opts);
+
+    // XP setup looks for winnt.sif at I386\winnt.sif (the canonical
+    // location). Some recipes also place it at the partition root; we put
+    // it in I386/ to match Microsoft's official behavior.
+    let i386_dir = ["I386", "i386"]
+        .iter()
+        .map(|n| usb_mount.join(n))
+        .find(|p| p.is_dir())
+        .ok_or_else(|| anyhow!("no I386/ directory on USB"))?;
+    let dest = i386_dir.join("winnt.sif");
+    std::fs::write(&dest, body)
+        .with_context(|| format!("writing {}", dest.display()))?;
+    println!("usbwin: wrote unattended answer file to {}", dest.display());
     Ok(())
 }
 

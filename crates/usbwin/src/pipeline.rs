@@ -10,6 +10,7 @@ pub mod hybrid;
 pub mod windows;
 pub mod windows_xp;
 pub mod windows_xp_sif;
+pub mod windows_xp_unattended;
 
 use anyhow::{anyhow, bail, Context, Result};
 use usbwin_core::{BootMode, Config, ModeRequest, WritePlan};
@@ -57,7 +58,7 @@ pub fn run(config: &Config) -> Result<()> {
             .context("hybrid mode pipeline failed"),
         BootMode::Windows => windows::run(&plan, &info, config.verify)
             .context("Windows 7+ mode pipeline failed"),
-        BootMode::WindowsXp => windows_xp::run(&plan, &info, config.verify)
+        BootMode::WindowsXp => windows_xp::run(&plan, &info, config)
             .context("Windows XP mode pipeline failed"),
         BootMode::IsolinuxLinux => bail!("isolinux Linux mode lands in v0.4"),
         BootMode::UefiOnly => bail!("UEFI-only mode lands in v0.4"),
