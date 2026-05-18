@@ -22,15 +22,35 @@ There is currently no native macOS arm64 binary that writes a bootable Windows i
 ## Install
 
 ```sh
-# Build from source (requires Rust stable + NASM)
+# Build from source (requires Rust stable + NASM for boot blobs)
 brew install nasm
 git clone https://github.com/jmappleby/usbwin
 cd usbwin
-cargo build --release
+cargo build --release --features usbwin-boot/embed-boot-asm
 sudo cp target/release/usbwin /usr/local/bin/
 ```
 
 Notarized signed binaries via GitHub Releases: TODO.
+
+## Test prerequisites
+
+The default `cargo test` only needs Rust. The optional integration tests need:
+
+```sh
+brew install nasm qemu      # nasm: assemble boot blobs. qemu: PBR smoke test.
+```
+
+Then:
+
+```sh
+# Run the QEMU smoke test for the FAT32 PBR boot code.
+cargo test -p usbwin-boot --test qemu_pbr --features embed-boot-asm -- --ignored
+
+# Run the byte-equality test vs ms-sys's blobs (requires a local checkout).
+git clone https://gitlab.com/cmaiolino/ms-sys.git /tmp/ms-sys
+USBWIN_MSSYS_BLOBS_DIR=/tmp/ms-sys/inc \
+    cargo test -p usbwin-boot --features "embed-boot-asm compare-mssys"
+```
 
 ## Usage
 

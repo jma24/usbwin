@@ -14,3 +14,4 @@ Cargo.lock.bak
 
 # local-only ms-sys blobs (never check these in — see PROVENANCE.md)
 /tests/fixtures/mssys/
+.claude/
