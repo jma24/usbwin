@@ -9,6 +9,8 @@
 //!   5  ISO classification failed
 //!   6  boot blobs not embedded (built without --features embed-boot-asm)
 
+mod pipeline;
+
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -103,19 +105,14 @@ fn main() -> ExitCode {
         device = %config.device_path.display(),
         mode = ?config.mode,
         dry_run = config.dry_run,
-        "usbwin: configuration parsed (pipeline not yet implemented)"
+        "usbwin: starting pipeline"
     );
 
-    // TODO: hand off to usbwin_core::run(&config). For the scaffold commit
-    // we just print what we'd do.
-    println!(
-        "usbwin (scaffold): would process {} -> {} (mode {:?}, dry_run={}, verify={})",
-        config.iso_path.display(),
-        config.device_path.display(),
-        config.mode,
-        config.dry_run,
-        config.verify
-    );
-
-    ExitCode::SUCCESS
+    match pipeline::run(&config) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("usbwin: {e:#}");
+            ExitCode::from(1)
+        }
+    }
 }
