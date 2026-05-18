@@ -15,9 +15,15 @@ pub enum BootMode {
     Hybrid,
 
     /// MBR + active FAT32 + bootmgr-loading PBR + file copy. Win 7 through 11.
-    /// XP install USB needs a different boot chain (Grub4DOS-style chainloader
-    /// + txtsetup.sif rewriting); it gets its own variant once this works.
     Windows,
+
+    /// XP install USB. NTLDR-based boot chain (`ms-sys --mbr` + `--fat32nt`),
+    /// FAT32 file copy from i386/-style install media, plus the WinSetupFromUSB
+    /// modifications: txtsetup.sif edited to move USB drivers into
+    /// `BootBusExtenders.Load`, optional WaitBT/Wait4UFD waiter injection,
+    /// optional winnt.sif answer file. v0.3 work-in-progress; see
+    /// docs/V0.3_WINDOWS_XP.md.
+    WindowsXp,
 
     /// MBR + active FAT32 + syslinux boot code + file copy. Older Linux ISOs
     /// that aren't hybrid (e.g. some isolinux-only distros).
@@ -32,6 +38,7 @@ impl BootMode {
         match self {
             BootMode::Hybrid => "hybrid",
             BootMode::Windows => "windows",
+            BootMode::WindowsXp => "windows-xp",
             BootMode::IsolinuxLinux => "linux",
             BootMode::UefiOnly => "uefi",
         }

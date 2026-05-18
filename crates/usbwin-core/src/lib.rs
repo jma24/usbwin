@@ -64,6 +64,7 @@ pub struct Config {
 pub enum ModeRequest {
     Auto,
     Windows,
+    WindowsXp,
     IsolinuxLinux,
     Hybrid,
     UefiOnly,

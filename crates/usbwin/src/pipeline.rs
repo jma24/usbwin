@@ -8,6 +8,7 @@ pub mod confirm;
 pub mod diskutil;
 pub mod hybrid;
 pub mod windows;
+pub mod windows_xp;
 
 use anyhow::{anyhow, bail, Context, Result};
 use usbwin_core::{BootMode, Config, ModeRequest, WritePlan};
@@ -55,8 +56,10 @@ pub fn run(config: &Config) -> Result<()> {
             .context("hybrid mode pipeline failed"),
         BootMode::Windows => windows::run(&plan, &info, config.verify)
             .context("Windows 7+ mode pipeline failed"),
-        BootMode::IsolinuxLinux => bail!("isolinux Linux mode lands in v0.3"),
-        BootMode::UefiOnly => bail!("UEFI-only mode lands in v0.3"),
+        BootMode::WindowsXp => windows_xp::run(&plan, &info, config.verify)
+            .context("Windows XP mode pipeline failed"),
+        BootMode::IsolinuxLinux => bail!("isolinux Linux mode lands in v0.4"),
+        BootMode::UefiOnly => bail!("UEFI-only mode lands in v0.4"),
     }
 }
 
@@ -70,6 +73,7 @@ fn build_plan(config: &Config) -> Result<WritePlan> {
     let mode = resolve_mode(config)?;
     let label = config.label.clone().unwrap_or_else(|| match mode {
         BootMode::Windows => "WIN7".into(),
+        BootMode::WindowsXp => "WINXP".into(),
         BootMode::Hybrid | BootMode::IsolinuxLinux | BootMode::UefiOnly => "USBWIN".into(),
     });
     Ok(WritePlan {
@@ -88,6 +92,7 @@ fn resolve_mode(config: &Config) -> Result<BootMode> {
             )
         }),
         ModeRequest::Windows => Ok(BootMode::Windows),
+        ModeRequest::WindowsXp => Ok(BootMode::WindowsXp),
         ModeRequest::Hybrid => Ok(BootMode::Hybrid),
         ModeRequest::IsolinuxLinux => Ok(BootMode::IsolinuxLinux),
         ModeRequest::UefiOnly => Ok(BootMode::UefiOnly),

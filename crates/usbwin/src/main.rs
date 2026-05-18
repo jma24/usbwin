@@ -63,6 +63,8 @@ struct Cli {
 enum ModeArg {
     Auto,
     Windows,
+    #[value(name = "windows-xp")]
+    WindowsXp,
     Linux,
     Hybrid,
     Uefi,
@@ -73,6 +75,7 @@ impl From<ModeArg> for ModeRequest {
         match m {
             ModeArg::Auto => ModeRequest::Auto,
             ModeArg::Windows => ModeRequest::Windows,
+            ModeArg::WindowsXp => ModeRequest::WindowsXp,
             ModeArg::Linux => ModeRequest::IsolinuxLinux,
             ModeArg::Hybrid => ModeRequest::Hybrid,
             ModeArg::Uefi => ModeRequest::UefiOnly,
