@@ -7,6 +7,7 @@
 pub mod confirm;
 pub mod diskutil;
 pub mod hybrid;
+pub mod windows;
 
 use anyhow::{anyhow, bail, Context, Result};
 use usbwin_core::{BootMode, Config, ModeRequest, WritePlan};
@@ -52,9 +53,8 @@ pub fn run(config: &Config) -> Result<()> {
     match plan.mode {
         BootMode::Hybrid => hybrid::run(&plan, &info, config.verify)
             .context("hybrid mode pipeline failed"),
-        BootMode::Windows => bail!(
-            "Windows 7+ mode lands in v0.2; track at https://github.com/jmappleby/usbwin"
-        ),
+        BootMode::Windows => windows::run(&plan, &info, config.verify)
+            .context("Windows 7+ mode pipeline failed"),
         BootMode::IsolinuxLinux => bail!("isolinux Linux mode lands in v0.3"),
         BootMode::UefiOnly => bail!("UEFI-only mode lands in v0.3"),
     }
