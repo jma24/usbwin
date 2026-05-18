@@ -17,6 +17,9 @@ use thiserror::Error;
 #[cfg(target_os = "macos")]
 pub mod macos;
 
+#[cfg(target_os = "macos")]
+pub mod raw;
+
 #[derive(Debug, Error)]
 pub enum DiskError {
     #[error("I/O: {0}")]
