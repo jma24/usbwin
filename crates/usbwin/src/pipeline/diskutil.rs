@@ -88,6 +88,84 @@ pub fn hdiutil_detach(mount_point: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Resolve the ms-sys binary path. Checks (in order):
+/// 1. `USBWIN_MS_SYS` env var
+/// 2. `/usr/local/bin/ms-sys`
+/// 3. `/opt/homebrew/bin/ms-sys`
+/// 4. `ms-sys` on PATH
+///
+/// Returns an error with install instructions if none of these resolve.
+pub fn find_ms_sys() -> Result<PathBuf> {
+    if let Ok(path) = std::env::var("USBWIN_MS_SYS") {
+        let p = PathBuf::from(path);
+        if p.exists() {
+            return Ok(p);
+        }
+    }
+    for candidate in &["/usr/local/bin/ms-sys", "/opt/homebrew/bin/ms-sys"] {
+        let p = PathBuf::from(candidate);
+        if p.exists() {
+            return Ok(p);
+        }
+    }
+    let out = Command::new("/usr/bin/env")
+        .args(["which", "ms-sys"])
+        .output()
+        .ok();
+    if let Some(out) = out {
+        if out.status.success() {
+            let line = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !line.is_empty() {
+                return Ok(PathBuf::from(line));
+            }
+        }
+    }
+    bail!(
+        "ms-sys binary not found. Windows-mode v0.2 needs ms-sys for the boot \
+         records (see FIELD_FINDINGS_2026_05_18.md). To install:\n  \
+         git clone https://gitlab.com/cmaiolino/ms-sys.git /tmp/ms-sys && \
+         cd /tmp/ms-sys && make\n\
+         Then either: sudo cp /tmp/ms-sys/bin/ms-sys /usr/local/bin/  OR  \
+         export USBWIN_MS_SYS=/tmp/ms-sys/bin/ms-sys"
+    )
+}
+
+/// Write the Windows 7 MBR boot code via `ms-sys --mbr7 /dev/rdiskN`.
+/// Per FIELD_FINDINGS §1: whole-sector write, raw device OK.
+pub fn ms_sys_mbr7(ms_sys: &Path, raw_disk_path: &str) -> Result<()> {
+    let output = Command::new(ms_sys)
+        .args(["-f", "--mbr7"])
+        .arg(raw_disk_path)
+        .output()
+        .with_context(|| format!("invoking ms-sys --mbr7 {raw_disk_path}"))?;
+    if !output.status.success() {
+        bail!(
+            "ms-sys --mbr7 failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    Ok(())
+}
+
+/// Write the FAT32 PE (Win 7/8/10 BOOTMGR-loading) PBR via
+/// `ms-sys --fat32pe /dev/diskNs1`. Per FIELD_FINDINGS §2: ms-sys does
+/// sub-sector writes that silently fail on /dev/rdiskN — use buffered
+/// `/dev/diskN` for the partition path.
+pub fn ms_sys_fat32pe(ms_sys: &Path, partition_buffered_path: &str) -> Result<()> {
+    let output = Command::new(ms_sys)
+        .args(["-f", "--fat32pe"])
+        .arg(partition_buffered_path)
+        .output()
+        .with_context(|| format!("invoking ms-sys --fat32pe {partition_buffered_path}"))?;
+    if !output.status.success() {
+        bail!(
+            "ms-sys --fat32pe failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    Ok(())
+}
+
 fn run_diskutil(args: &[&str]) -> Result<()> {
     let output = Command::new("diskutil")
         .args(args)

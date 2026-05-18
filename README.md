@@ -30,6 +30,22 @@ cargo build --release --features usbwin-boot/embed-boot-asm
 sudo cp target/release/usbwin /usr/local/bin/
 ```
 
+### Windows-mode dependency
+
+For `--type=windows` (Win 7/8/10/11 install USBs), v0.2 shells out to `ms-sys`
+for the boot-record bytes (the clean-room PBR is v1.0 work — see
+[`docs/V0.2_PBR_STATUS.md`](docs/V0.2_PBR_STATUS.md)). One-time setup:
+
+```sh
+git clone https://gitlab.com/cmaiolino/ms-sys.git /tmp/ms-sys
+cd /tmp/ms-sys && make
+sudo cp bin/ms-sys /usr/local/bin/
+```
+
+Or without sudo: `export USBWIN_MS_SYS=/tmp/ms-sys/bin/ms-sys` in your shell.
+
+Hybrid mode (Linux/BSD ISOs) needs no ms-sys.
+
 Notarized signed binaries via GitHub Releases: TODO.
 
 ## Test prerequisites

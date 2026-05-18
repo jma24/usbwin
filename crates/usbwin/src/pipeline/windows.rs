@@ -35,14 +35,19 @@ use super::diskutil;
 
 const SECTOR_SIZE: u64 = 512;
 
-pub fn run(plan: &WritePlan, info: &DeviceInfo, verify: bool) -> Result<()> {
+pub fn run(plan: &WritePlan, info: &DeviceInfo, _verify: bool) -> Result<()> {
     let bsd_path = info.path.replace("/dev/r", "/dev/");
     let partition_raw = format!("{}s1", info.path);
+    let partition_bsd = format!("{bsd_path}s1");
+
+    // Find ms-sys up front so we fail fast if it's missing (v0.2 pragmatic
+    // boot-record path; see docs/V0.2_PBR_STATUS.md).
+    let ms_sys = diskutil::find_ms_sys()?;
 
     // 1. Unmount everything mounted from this disk.
     diskutil::unmount_disk(&bsd_path).context("unmount before partition write")?;
 
-    // 2. Write the MBR.
+    // 2. Write the MBR's partition table (boot code overwritten by ms-sys --mbr7 later).
     write_mbr_sector(info)?;
 
     // 3. Kernel needs to re-read the partition table. The simplest portable
@@ -71,12 +76,16 @@ pub fn run(plan: &WritePlan, info: &DeviceInfo, verify: bool) -> Result<()> {
     let _ = diskutil::hdiutil_detach(&iso_mount);
     copy_result.context("copying ISO contents to USB")?;
 
-    // 9. Unmount the USB so we can write the PBR.
-    diskutil::unmount_disk(&bsd_path).context("unmount before PBR splice")?;
+    // 9. Unmount the USB so we can write the boot records.
+    diskutil::unmount_disk(&bsd_path).context("unmount before MBR/PBR write")?;
 
-    // 10. Splice the FAT32 PBR onto sector 0 of the partition, preserving
-    //     the BPB that newfs_msdos wrote.
-    splice_pbr(&partition_raw, &info.model, verify).context("PBR splice")?;
+    // 10. Write the Win 7 boot records via ms-sys (FIELD_FINDINGS §8).
+    //     MBR (whole-sector, raw OK) + FAT32 PE PBR (sub-sector, must be buffered).
+    diskutil::ms_sys_mbr7(&ms_sys, &info.path)
+        .context("ms-sys --mbr7 (writing Win 7 MBR boot code)")?;
+    let _ = diskutil::unmount_disk(&bsd_path);
+    diskutil::ms_sys_fat32pe(&ms_sys, &partition_bsd)
+        .context("ms-sys --fat32pe (writing FAT32 PE PBR)")?;
 
     // 11. Unmount + eject.
     let _ = diskutil::unmount_disk(&bsd_path);
@@ -114,6 +123,9 @@ fn write_mbr_sector(info: &DeviceInfo) -> Result<()> {
     Ok(())
 }
 
+// Dead code in v0.2 (replaced by ms-sys --fat32pe). Kept around for v1.0
+// when a clean-room PBR replaces the ms-sys dependency.
+#[allow(dead_code)]
 fn splice_pbr(partition_raw: &str, model: &str, verify: bool) -> Result<()> {
     if usbwin_boot::FAT32_PBR_BOOT.is_empty() {
         bail!(
