@@ -6,7 +6,9 @@
 //! while preserving bytes 3..89 (the BPB). See docs/BOOT_RECORDS.md.
 
 pub mod blobs;
+pub mod mbr;
 pub mod pbr;
 
 pub use blobs::{FAT32_PBR_BOOT, MBR_BOOT, NTFS_PBR_BOOT};
+pub use mbr::{build_mbr, PartitionEntry, PartitionType, PARTITION_START_LBA};
 pub use pbr::splice_fat32_pbr;
