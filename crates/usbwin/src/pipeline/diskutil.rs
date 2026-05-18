@@ -166,6 +166,40 @@ pub fn ms_sys_fat32pe(ms_sys: &Path, partition_buffered_path: &str) -> Result<()
     Ok(())
 }
 
+/// Write the Win 2000/XP/2003 MBR boot code via `ms-sys --mbr /dev/rdiskN`.
+/// XP analogue of `ms_sys_mbr7`.
+pub fn ms_sys_mbr(ms_sys: &Path, raw_disk_path: &str) -> Result<()> {
+    let output = Command::new(ms_sys)
+        .args(["-f", "--mbr"])
+        .arg(raw_disk_path)
+        .output()
+        .with_context(|| format!("invoking ms-sys --mbr {raw_disk_path}"))?;
+    if !output.status.success() {
+        bail!(
+            "ms-sys --mbr failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    Ok(())
+}
+
+/// Write the NT 5.x (XP/2003) NTLDR-loading FAT32 PBR via
+/// `ms-sys --fat32nt /dev/diskNs1`. Sub-sector writes; use buffered device.
+pub fn ms_sys_fat32nt(ms_sys: &Path, partition_buffered_path: &str) -> Result<()> {
+    let output = Command::new(ms_sys)
+        .args(["-f", "--fat32nt"])
+        .arg(partition_buffered_path)
+        .output()
+        .with_context(|| format!("invoking ms-sys --fat32nt {partition_buffered_path}"))?;
+    if !output.status.success() {
+        bail!(
+            "ms-sys --fat32nt failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    Ok(())
+}
+
 fn run_diskutil(args: &[&str]) -> Result<()> {
     let output = Command::new("diskutil")
         .args(args)

@@ -9,6 +9,7 @@ pub mod diskutil;
 pub mod hybrid;
 pub mod windows;
 pub mod windows_xp;
+pub mod windows_xp_sif;
 
 use anyhow::{anyhow, bail, Context, Result};
 use usbwin_core::{BootMode, Config, ModeRequest, WritePlan};

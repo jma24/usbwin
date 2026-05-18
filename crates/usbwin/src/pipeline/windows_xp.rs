@@ -1,47 +1,343 @@
-//! Windows XP install USB pipeline (v0.3 work-in-progress).
+//! Windows XP install USB pipeline (v0.3).
 //!
-//! XP install media (i386/-style, NTLDR-based boot) is fundamentally
-//! different from Vista+/Win 7+. It was designed for CD/floppy in 2001 and
-//! does NOT boot from USB cleanly without the modifications established by
-//! the WinSetupFromUSB project circa 2007-2009. The two essential mods:
+//! Differences vs Win 7+ mode (see windows.rs):
+//!   - Boot records: `ms-sys --mbr` (Win 2000/XP/2003 MBR) + `--fat32nt`
+//!     (NTLDR-loading FAT32 PBR), instead of `--mbr7` / `--fat32pe`.
+//!   - Post-copy SIF modification: edit I386/TXTSETUP.SIF on the USB to
+//!     move USB drivers into [BootBusExtenders.Load] so XP text-mode
+//!     setup recognizes the USB as boot media (the WinSetupFromUSB recipe).
+//!   - Default label "WINXP" (vs "WIN7").
 //!
-//! 1. `txtsetup.sif` must declare USB drivers (`usbehci`, `usbohci`,
-//!    `usbuhci`, `usbhub`, `usbstor`) in the `[BootBusExtenders.Load]`
-//!    section instead of `[InputDevicesSupport.Load]`. Without this, text-
-//!    mode setup loads the USB devices only as input devices, can't see
-//!    the install source as mass storage, and the second-stage reboot
-//!    fails to find the install files.
-//!
-//! 2. Optionally inject `WaitBT.sys` and `Wait4UFD.sys` to delay the OS
-//!    until the BIOS finishes initializing the USB bus on the target
-//!    machine, avoiding the post-reboot `0x7B INACCESSIBLE_BOOT_DEVICE`
-//!    BSOD on some hardware.
-//!
-//! Boot record bytes come from `ms-sys --mbr` (Win 2000/XP/2003 MBR) and
-//! `ms-sys --fat32nt` (NT 5.x-style NTLDR-loading FAT32 PBR), the XP
-//! analogues of the `--mbr7` / `--fat32pe` pair used by the Win 7+ path.
-//!
-//! Chunk status (see docs/V0.3_WINDOWS_XP.md):
-//!   1. BootMode + CLI + dispatch                              DONE
-//!   2. Partition / format / file copy (clone of windows.rs)   THIS COMMIT
-//!   3. txtsetup.sif parser + modifier                         TODO
-//!   4. Wire SIF modification into file-copy                   TODO
-//!   5. ms-sys --mbr + --fat32nt invocation                    TODO
-//!   6. WaitBT/Wait4UFD driver injection                       TODO
-//!   7. winnt.sif (unattended answers) generator               TODO
+//! What this does NOT YET do (planned chunks 6-7 per docs/V0.3_WINDOWS_XP.md):
+//!   - WaitBT/Wait4UFD driver injection (`--xp-waiters /path/`)
+//!   - winnt.sif answer file generation (`--xp-unattended`)
+//! Without those, XP install will reach the text-mode setup phase and
+//! complete the first stage. The graphical setup phase may hit a 0x7B
+//! BSOD on hardware that initializes USB late; if you see that, we'll
+//! land chunk 6.
 
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Context, Result};
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use std::fs::File;
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
-use usbwin_core::WritePlan;
+use usbwin_core::{Device, WritePlan};
+use usbwin_disk::raw::{OpenMode, RawDevice};
 use usbwin_disk::DeviceInfo;
 
-pub fn run(_plan: &WritePlan, _info: &DeviceInfo, _verify: bool) -> Result<()> {
-    bail!(
-        "Windows XP install mode is v0.3 work-in-progress. \
-         The chunks landing in this commit are: BootMode enum, CLI dispatch, \
-         label defaulting. The actual pipeline (partition, format, file \
-         copy, ms-sys boot records, txtsetup.sif modification, optional \
-         driver injection) lands in subsequent commits. \
-         See docs/V0.3_WINDOWS_XP.md for the plan."
+use super::diskutil;
+use super::windows_xp_sif;
+
+const SECTOR_SIZE: u64 = 512;
+
+pub fn run(plan: &WritePlan, info: &DeviceInfo, _verify: bool) -> Result<()> {
+    let bsd_path = info.path.replace("/dev/r", "/dev/");
+    let partition_raw = format!("{}s1", info.path);
+    let partition_bsd = format!("{bsd_path}s1");
+
+    // Fail fast if ms-sys isn't present (boot-records are mandatory for XP).
+    let ms_sys = diskutil::find_ms_sys()?;
+
+    diskutil::unmount_disk(&bsd_path).context("unmount before partition write")?;
+    write_mbr_sector(info)?;
+    let _ = diskutil::unmount_disk(&bsd_path);
+    diskutil::mount_disk(&bsd_path).context("mount after partition write")?;
+    let _ = diskutil::unmount_disk(&bsd_path);
+
+    diskutil::newfs_msdos_fat32(&partition_raw, &plan.label)
+        .with_context(|| format!("formatting {partition_raw} as FAT32"))?;
+
+    diskutil::mount_disk(&bsd_path).context("mount after format")?;
+    let usb_mount = find_mount_for_label(&plan.label)
+        .ok_or_else(|| anyhow!("formatted partition didn't appear in /Volumes"))?;
+
+    let iso_mount = diskutil::hdiutil_attach_iso(&plan.iso_path)
+        .with_context(|| format!("attaching ISO {}", plan.iso_path.display()))?;
+
+    let copy_result = copy_iso_contents(&iso_mount, &usb_mount);
+    let _ = diskutil::hdiutil_detach(&iso_mount);
+    copy_result.context("copying XP ISO contents to USB")?;
+
+    // Apply the WinSetupFromUSB txtsetup.sif modification on the copied file.
+    apply_txtsetup_mods(&usb_mount).context("modifying TXTSETUP.SIF on USB")?;
+
+    diskutil::unmount_disk(&bsd_path).context("unmount before boot records")?;
+
+    // Write the XP-era boot records via ms-sys (FIELD_FINDINGS §1 maps these
+    // to --mbr and --fat32nt; --fat32pe is Vista+ and would load bootmgr,
+    // not NTLDR, which is wrong for XP).
+    diskutil::ms_sys_mbr(&ms_sys, &info.path)
+        .context("ms-sys --mbr (writing Win 2000/XP/2003 MBR boot code)")?;
+    let _ = diskutil::unmount_disk(&bsd_path);
+    diskutil::ms_sys_fat32nt(&ms_sys, &partition_bsd)
+        .context("ms-sys --fat32nt (writing NTLDR-loading FAT32 PBR)")?;
+
+    let _ = diskutil::unmount_disk(&bsd_path);
+    diskutil::eject(&bsd_path).context("eject after write")?;
+
+    println!(
+        "\nusbwin: {} -> {} (Windows XP mode) OK",
+        plan.iso_path.display(),
+        info.path
+    );
+    Ok(())
+}
+
+fn apply_txtsetup_mods(usb_mount: &Path) -> Result<()> {
+    // FAT32 is case-insensitive but case-preserving. The ISO often has
+    // "I386/TXTSETUP.SIF" (uppercase). Try a couple of common spellings.
+    let candidates = [
+        usb_mount.join("I386").join("TXTSETUP.SIF"),
+        usb_mount.join("i386").join("txtsetup.sif"),
+        usb_mount.join("I386").join("txtsetup.sif"),
+    ];
+    let sif_path = candidates
+        .iter()
+        .find(|p| p.exists())
+        .ok_or_else(|| anyhow!("TXTSETUP.SIF not found on USB at any of {candidates:?}; is this really an XP install ISO?"))?;
+
+    let original = std::fs::read_to_string(sif_path)
+        .with_context(|| format!("reading {}", sif_path.display()))?;
+    let mut sif = windows_xp_sif::Sif::parse(&original);
+    let moved = windows_xp_sif::apply_usb_boot_mods(&mut sif)
+        .map_err(|e| anyhow!("apply_usb_boot_mods: {e}"))?;
+    if moved == 0 {
+        bail!(
+            "no USB drivers found in [InputDevicesSupport.Load] of TXTSETUP.SIF; \
+             this doesn't look like a standard XP install media. Expected at least \
+             one of usbehci/usbohci/usbuhci/usbhub/usbstor."
+        );
+    }
+    let modified = sif.render();
+    std::fs::write(sif_path, modified)
+        .with_context(|| format!("writing modified {}", sif_path.display()))?;
+    println!(
+        "usbwin: modified {} (moved {} USB drivers into BootBusExtenders.Load)",
+        sif_path.display(),
+        moved
+    );
+    Ok(())
+}
+
+fn write_mbr_sector(info: &DeviceInfo) -> Result<()> {
+    if usbwin_boot::MBR_BOOT.is_empty() {
+        bail!("MBR boot blob not embedded; rebuild with --features usbwin-boot/embed-boot-asm");
+    }
+    let disk_sectors = info.size_bytes / SECTOR_SIZE;
+    let mbr = usbwin_boot::build_mbr(usbwin_boot::MBR_BOOT, disk_sectors)
+        .map_err(|e| anyhow!("building MBR: {e}"))?;
+    let mut dev = RawDevice::open(&info.path, OpenMode::ReadWrite, &info.model)
+        .context("opening whole disk for MBR write")?;
+    dev.write_at(0, &mbr).map_err(anyhow_from_core)?;
+    dev.sync().map_err(anyhow_from_core)?;
+    let mut readback = vec![0u8; 512];
+    dev.read_at(0, &mut readback).map_err(anyhow_from_core)?;
+    if readback != mbr {
+        bail!("MBR write verify mismatch");
+    }
+    Ok(())
+}
+
+fn find_mount_for_label(label: &str) -> Option<PathBuf> {
+    let target = PathBuf::from("/Volumes").join(label);
+    for _ in 0..20 {
+        if target.exists() {
+            return Some(target);
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    None
+}
+
+// File-copy machinery: same as windows.rs (chunked, MultiProgress with files+bytes).
+// Inlined rather than abstracted to keep the v0.3 pipeline standalone; we can
+// refactor into a shared module once Linux/UEFI modes also need it.
+
+fn copy_iso_contents(iso_mount: &Path, usb_mount: &Path) -> Result<()> {
+    let entries = walk_files(iso_mount)?;
+    let total_bytes: u64 = entries.iter().map(|e| e.size).sum();
+    let total_files = entries.iter().filter(|e| !e.is_dir).count() as u64;
+
+    let multi = MultiProgress::new();
+    let bar_style = ProgressStyle::with_template(
+        "  {prefix:<6} {wide_bar:.cyan/blue} {msg}",
     )
+    .unwrap()
+    .progress_chars("█▓▒░ ");
+    let pb_bytes = multi.add(ProgressBar::new(total_bytes));
+    pb_bytes.set_style(bar_style.clone());
+    pb_bytes.set_prefix("bytes");
+    pb_bytes.enable_steady_tick(Duration::from_millis(100));
+    let pb_files = multi.add(ProgressBar::new(total_files));
+    pb_files.set_style(bar_style);
+    pb_files.set_prefix("files");
+    pb_files.enable_steady_tick(Duration::from_millis(100));
+
+    for entry in &entries {
+        if entry.is_dir {
+            let dest = usb_mount.join(entry.rel.as_path());
+            std::fs::create_dir_all(&dest)
+                .with_context(|| format!("mkdir {}", dest.display()))?;
+        }
+    }
+
+    let start = Instant::now();
+    let mut bytes_copied = 0u64;
+    let mut files_copied = 0u64;
+    for entry in &entries {
+        if entry.is_dir {
+            continue;
+        }
+        let src = iso_mount.join(entry.rel.as_path());
+        let dest = usb_mount.join(entry.rel.as_path());
+        copy_chunked(
+            &src,
+            &dest,
+            &pb_bytes,
+            &pb_files,
+            &mut bytes_copied,
+            total_bytes,
+            files_copied,
+            total_files,
+            start,
+        )
+        .with_context(|| format!("copy {} -> {}", src.display(), dest.display()))?;
+        files_copied += 1;
+        update_messages(
+            &pb_bytes,
+            &pb_files,
+            bytes_copied,
+            total_bytes,
+            files_copied,
+            total_files,
+            start,
+        );
+    }
+    let _ = std::process::Command::new("sync").status();
+    pb_bytes.finish();
+    pb_files.finish();
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn copy_chunked(
+    src: &Path,
+    dest: &Path,
+    pb_bytes: &ProgressBar,
+    pb_files: &ProgressBar,
+    bytes_copied: &mut u64,
+    total_bytes: u64,
+    files_copied: u64,
+    total_files: u64,
+    start: Instant,
+) -> Result<()> {
+    const CHUNK: usize = 4 * 1024 * 1024;
+    let mut src_f = File::open(src).with_context(|| format!("open {}", src.display()))?;
+    let mut dest_f = File::create(dest).with_context(|| format!("create {}", dest.display()))?;
+    let mut buf = vec![0u8; CHUNK];
+    loop {
+        let n = src_f.read(&mut buf).context("read from ISO")?;
+        if n == 0 {
+            break;
+        }
+        dest_f.write_all(&buf[..n]).context("write to USB")?;
+        *bytes_copied += n as u64;
+        update_messages(pb_bytes, pb_files, *bytes_copied, total_bytes, files_copied, total_files, start);
+    }
+    Ok(())
+}
+
+fn update_messages(
+    pb_bytes: &ProgressBar,
+    pb_files: &ProgressBar,
+    bytes_copied: u64,
+    total_bytes: u64,
+    files_copied: u64,
+    total_files: u64,
+    start: Instant,
+) {
+    let elapsed = start.elapsed().as_secs_f64().max(0.01);
+    let bps = bytes_copied as f64 / elapsed;
+    let fps = files_copied as f64 / elapsed;
+    let bytes_eta = if bps > 0.0 { (total_bytes - bytes_copied) as f64 / bps } else { 0.0 };
+    let files_eta = if fps > 0.0 { (total_files - files_copied) as f64 / fps } else { 0.0 };
+    let eta = bytes_eta.max(files_eta);
+
+    pb_bytes.set_position(bytes_copied);
+    pb_bytes.set_message(format!(
+        "{:>10} / {:<10} @ {:>10}/s  ETA {}",
+        human_bytes(bytes_copied),
+        human_bytes(total_bytes),
+        human_bytes(bps as u64),
+        human_secs(eta as u64),
+    ));
+    pb_files.set_position(files_copied);
+    pb_files.set_message(format!(
+        "{:>10} / {:<10} @ {:>8.0}/s  ETA {}",
+        files_copied,
+        total_files,
+        fps,
+        human_secs(eta as u64),
+    ));
+}
+
+fn human_bytes(bytes: u64) -> String {
+    const KIB: u64 = 1024;
+    const MIB: u64 = KIB * 1024;
+    const GIB: u64 = MIB * 1024;
+    if bytes >= GIB {
+        format!("{:.2} GiB", bytes as f64 / GIB as f64)
+    } else if bytes >= MIB {
+        format!("{:.1} MiB", bytes as f64 / MIB as f64)
+    } else if bytes >= KIB {
+        format!("{:.1} KiB", bytes as f64 / KIB as f64)
+    } else {
+        format!("{} B", bytes)
+    }
+}
+
+fn human_secs(s: u64) -> String {
+    if s >= 3600 { format!("{}h{:02}m", s / 3600, (s % 3600) / 60) }
+    else if s >= 60 { format!("{}m{:02}s", s / 60, s % 60) }
+    else { format!("{}s", s) }
+}
+
+struct CopyEntry {
+    rel: PathBuf,
+    size: u64,
+    is_dir: bool,
+}
+
+fn walk_files(root: &Path) -> Result<Vec<CopyEntry>> {
+    let mut out = Vec::new();
+    walk_recursive(root, root, &mut out)?;
+    out.sort_by(|a, b| a.is_dir.cmp(&b.is_dir).reverse().then(a.rel.cmp(&b.rel)));
+    Ok(out)
+}
+
+fn walk_recursive(root: &Path, dir: &Path, out: &mut Vec<CopyEntry>) -> Result<()> {
+    for entry in std::fs::read_dir(dir)
+        .with_context(|| format!("read_dir {}", dir.display()))?
+    {
+        let entry = entry?;
+        let path = entry.path();
+        let rel = path
+            .strip_prefix(root)
+            .map_err(|e| anyhow!("strip_prefix: {e}"))?
+            .to_path_buf();
+        let metadata = entry.metadata()?;
+        if metadata.is_dir() {
+            out.push(CopyEntry { rel: rel.clone(), size: 0, is_dir: true });
+            walk_recursive(root, &path, out)?;
+        } else if metadata.is_file() {
+            out.push(CopyEntry { rel, size: metadata.len(), is_dir: false });
+        }
+    }
+    Ok(())
+}
+
+fn anyhow_from_core(e: usbwin_core::Error) -> anyhow::Error {
+    anyhow!("{e}")
 }
