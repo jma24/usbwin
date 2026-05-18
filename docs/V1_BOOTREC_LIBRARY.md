@@ -329,6 +329,316 @@ If they happen to be byte-identical to Microsoft's bytes (because the
 space of "correct implementations of this small task" is small), that's
 parallel invention, not copying.
 
+## Verifiable evidence
+
+Two independent verifiability claims; each needs concrete mechanisms.
+Policy without machinery is just a wish.
+
+### Verifiably correct: machine-checked, CI-enforced
+
+For each variant, the eval layers produce binary pass/fail signals that
+CI runs on every commit:
+
+```yaml
+# .github/workflows/verify.yml (sketch)
+correctness:
+  - layer1_oracle:      # Byte-equality vs ms-sys
+      gates: [all-variants-equal] | [variant-equal-or-justified]
+      run-on: every PR
+  - layer2_qemu:        # Synthetic boot smoke
+      gates: [all-stubs-print-marker]
+      run-on: every PR
+  - layer3_real:        # Real-content boot test
+      gates: [reaches-installer-welcome]
+      run-on: PR + nightly
+  - layer4_hardware:    # Manual sign-off
+      gates: [signed-off-by HARDWARE_TESTS.md commit]
+      run-on: release-gate
+```
+
+Concrete correctness deliverables per variant:
+
+1. **Coverage matrix** (`COVERAGE.md`) — variant × eval-layer × pass/fail.
+   No variant ships if any required layer is RED.
+2. **Determinism check** — `cargo build` produces byte-identical output
+   across runs / clean checkouts / different developer machines.
+   Verified via `tests/determinism.sh` that runs `cargo clean && cargo
+   build --release && sha256sum target/release/...`. CI fails on diff.
+3. **Reproducible from spec** — `docs/SPEC_TRACE.md` maps each non-trivial
+   constant in our boot code to the spec page that justifies it
+   (FAT32 BPB offset 0x0B == BytsPerSec → FATGEN103 §3.1). Catch
+   "magic number copied from somewhere" early.
+4. **Regression fixtures** — for each variant, a fixed input → fixed
+   output mapping in `tests/golden/`. Changes require explicit fixture
+   updates with justification in the commit message.
+
+### Verifiably green-room: process + machinery
+
+Air-gap is a policy that humans can break (or be subtly tainted by).
+The mechanisms that catch the breakage:
+
+#### 1. Contributor reading declaration (per-PR)
+
+Every PR that touches `bootrec/src/` or `bootrec/boot-asm/` includes
+a YAML block in the description:
+
+```yaml
+clean_room:
+  role: spec-reader              # or "oracle-plumbing"
+  references_consulted:
+    - "FATGEN103.doc §3.1-3.3 (BPB layout)"
+    - "Phoenix BIOS Interface Reference §INT 13h, fn 0x42"
+    - "osdev.org/FAT (prose only; verified no code blocks read)"
+  forbidden_unread:
+    - ms-sys/src/         # I have not read these files
+    - ms-sys/inc/         # ever
+    - syslinux/           # not in last 12 months
+    - any-Windows-source-leak
+  attestation: |
+    I am not aware of having read ms-sys source code, leaked Microsoft
+    boot record source, or any GPL/BSD bootloader source within the
+    last 12 months. The code in this PR was derived solely from the
+    references listed above.
+  signed: $CONTRIBUTOR_NAME
+  date: 2026-XX-XX
+```
+
+This goes in the PR description (not the commit, so it's separable
+from the code). It's a sworn-style attestation, not legally binding,
+but it creates a paper trail.
+
+#### 2. Reading log (`CONTRIBUTORS_READING.md`)
+
+A repository-tracked file listing, per contributor, what reference
+sources they've read AT ALL, with timestamps. Append-only. A
+contributor's eligibility for the spec-reader role is determined by
+checking this log:
+
+```markdown
+## joa@example.com
+
+| Source                                | Read     | Status        |
+|----------------------------------------|----------|----------------|
+| FATGEN103.doc (FAT32 spec)             | 2026-05  | ✓ allowed     |
+| Phoenix BIOS Interface Ref             | 2026-05  | ✓ allowed     |
+| osdev.org/FAT prose                    | 2026-06  | ✓ allowed     |
+| ms-sys/inc/*.h byte arrays             | 2018     | ❌ tainted    |
+```
+
+If "tainted" sources appear, the contributor cannot work on
+`bootrec/src/` (boot code) — only on `bootrec/tests/oracle/` (where
+seeing ms-sys output is the whole point). The tainting half-life is
+conservatively 24 months from last-read; after that, on case-by-case
+basis with project-lead sign-off.
+
+#### 3. Forbidden-symbol grep (CI gate)
+
+A simple CI check that fails the build if any of these patterns appear
+anywhere in `bootrec/src/` or `bootrec/boot-asm/`:
+
+```sh
+# .github/workflows/clean_room_check.sh
+FORBIDDEN_PATTERNS=(
+    "ms-sys"             # literal name (shouldn't appear in source)
+    "mssys"
+    "ilko-y"             # the WaitBT author
+    "syslinux"
+    "ldlinux"
+    "include.*ms-sys"
+    "/* extracted from"  # common "I copied this" comment style
+)
+for pattern in "${FORBIDDEN_PATTERNS[@]}"; do
+    if grep -r "$pattern" bootrec/src/ bootrec/boot-asm/; then
+        echo "FORBIDDEN PATTERN FOUND: $pattern"
+        exit 1
+    fi
+done
+```
+
+Trivial check, but catches the dumbest "I copied a block of bytes from
+that one .h file" leaks.
+
+#### 4. Statistical similarity check (CI gate)
+
+For each variant where ms-sys produces equivalent bytes, compute the
+"non-trivial similarity" between our bytes and ms-sys's:
+
+- Both files produce 512 bytes.
+- ~250 of those are the BPB area (which both must produce identically — it's
+  filesystem state, not boot code).
+- The remaining ~260 bytes are the boot code itself.
+
+Trivial similarity (same opcodes for the same operations) is fine. Excessive
+similarity beyond what FAT32 setup-code structure mandates is a flag.
+
+Concrete measurement: for the 260-byte boot-code region, compute
+Hamming distance between our output and ms-sys's. Plot the distribution
+across all variants. Flag any variant where the Hamming distance is
+suspiciously low (e.g. fewer than 10 differing bytes when the function
+is non-trivial — that suggests copy or extremely-likely accidental
+parallel invention, both worth a manual review).
+
+This is a soft signal, not a hard gate. It triggers an "investigate
+this" rather than "fail the build."
+
+#### 5. Independent code review (per release)
+
+Before each `bootrec` release tag, the boot-code files (`bootrec/src/`,
+`bootrec/boot-asm/`) are reviewed by a contributor who has *not*
+written any of the code, with explicit focus on: "does this look
+clean-room, or does anything look copy-pasted from somewhere
+familiar?" The reviewer also confirms the contributor reading log
+matches the PR claims.
+
+For a single-contributor project, this step is "contributor reviews
+their own code with the explicit checklist, in writing." Not as
+strong as two-person review but catches the "I just did this without
+thinking" cases.
+
+#### 6. Public legal review (before 1.0)
+
+Before declaring a 1.0 release, a one-time review by a lawyer
+familiar with clean-room reverse engineering (or at minimum, a
+public RFC review with knowledgeable hobbyist community input from
+e.g. msfn.org). Document the review outcomes in
+`docs/LEGAL_REVIEW.md`.
+
+### Both verifiability properties combined
+
+A pull request is mergeable to `main` only when ALL of these are
+green:
+
+| Check                          | Verifies      | Automated? |
+|--------------------------------|---------------|------------|
+| Layer 1 oracle test            | Correctness   | ✓ CI       |
+| Layer 2 QEMU smoke             | Correctness   | ✓ CI       |
+| Layer 3 real-content (if req)  | Correctness   | ✓ CI       |
+| Determinism check              | Correctness   | ✓ CI       |
+| Coverage matrix updated        | Correctness   | ✓ CI       |
+| Clean-room declaration in PR    | Cleanroom     | semi (lint) |
+| Reading log updated             | Cleanroom     | semi (lint) |
+| Forbidden-symbol grep clean    | Cleanroom     | ✓ CI       |
+| Statistical similarity below threshold | Cleanroom | ✓ CI       |
+| Independent review sign-off    | Both          | manual      |
+
+Layer 4 (real hardware) is required at release-gate, not per-PR.
+
+The combination is what makes the claim **verifiable**: if any
+reviewer in the next 30 years wants to challenge whether bootrec is
+genuinely clean-room, they can read the reading log, audit the PR
+attestations, run the forbidden-symbol checks themselves, and inspect
+the similarity-distribution data. Nothing depends on trusting the
+authors' word.
+
+## Form factor: library AND binary
+
+`bootrec` ships as a single Cargo crate that produces both a Rust library
+and a CLI binary. The same code, two consumption modes.
+
+### Library (`bootrec` Rust crate)
+
+The canonical API. usbwin links against it directly, gets Rust-typed
+input (`Fat32Bpb`, `DiskGeometry`, etc.) and Rust-typed output
+(`[u8; 512]`, `PbrBytes`). No subprocess overhead, no string parsing,
+no shell escaping. usbwin's `pipeline/windows.rs` switches from
+`Command::new(ms_sys).args(...)` to `bootrec::fat32_pbr_bootmgr(bpb)`.
+
+```rust
+// In usbwin's Cargo.toml:
+bootrec = { path = "../bootrec" }   // or version = "1.0" when published
+
+// In usbwin's pipeline/windows.rs:
+let pbr_bytes = bootrec::fat32_pbr_bootmgr(bpb);
+dev.write_at(0, &pbr_bytes[0])?;    // sector 0
+dev.write_at(512, &pbr_bytes[1])?;  // sector 1
+dev.write_at(12 * 512, &pbr_bytes[12])?;  // sector 12
+```
+
+### Binary (`bootrec` CLI)
+
+A thin wrapper that exposes the library as a command-line tool — a
+drop-in replacement for ms-sys for the variants we support. ~50 lines
+of clap-based argument parsing around library calls.
+
+```sh
+# usbwin's --mbr7 equivalent
+bootrec --mbr-win7 /dev/rdisk6
+
+# usbwin's --fat32pe equivalent
+bootrec --fat32-bootmgr /dev/rdisk6s1
+
+# Or by variant explicitly
+bootrec --variant fat32-bootmgr --output /dev/rdisk6s1
+```
+
+The CLI uses the SAME library functions internally. The binary form
+exists because:
+
+1. **Drop-in for existing recipes** — anyone using ms-sys in a shell
+   script can switch by changing `ms-sys --fat32pe` to `bootrec
+   --fat32-bootmgr`. Lowers adoption friction for the broader
+   USB-tool ecosystem (WinSetupFromUSB-likes, retro-computing folks).
+2. **Cross-language interop** — Python/Go/Bash consumers don't need a
+   Rust toolchain.
+3. **Reproducibility verification** — for the audit case ("show me
+   bootrec produces the same bytes ms-sys does"), an auditor can run
+   `bootrec` and `ms-sys` side by side without setting up a Rust dev
+   environment.
+4. **Oracle-of-our-own-binary tests** — the test harness can use the
+   CLI binary as the black-box subprocess, exactly like it uses
+   ms-sys. This catches regressions in the public API surface where
+   internal-library unit tests might pass but the public CLI
+   contract has drifted.
+
+### Crate layout
+
+Same `bootrec/` workspace member from the earlier layout section, with
+`Cargo.toml` declaring both targets:
+
+```toml
+[package]
+name = "bootrec"
+version = "1.0.0"
+edition = "2021"
+license = "MIT"
+
+[lib]
+name = "bootrec"
+path = "src/lib.rs"
+
+[[bin]]
+name = "bootrec"
+path = "src/bin/bootrec.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }   # binary only; cargo
+                                                   # will skip when used
+                                                   # as a library dep
+```
+
+The library is the public interface that's stable across versions; the
+binary's CLI is allowed to evolve more freely (deprecations announced
+in release notes). usbwin always tracks the library version, not the
+binary version.
+
+### Naming for symmetry with ms-sys
+
+Where it's obvious, the CLI flag names mirror ms-sys's so the muscle
+memory transfers:
+
+| ms-sys flag      | bootrec flag          | Library function             |
+|------------------|------------------------|------------------------------|
+| `--mbr7`         | `--mbr-win7`           | `mbr_win7(...)`              |
+| `--mbr`          | `--mbr-xp`             | `mbr_xp(...)`                |
+| `--fat32pe`      | `--fat32-bootmgr`      | `fat32_pbr_bootmgr(...)`     |
+| `--fat32nt`      | `--fat32-ntldr`        | `fat32_pbr_ntldr(...)`       |
+| `--ntfs`         | `--ntfs-bootmgr`       | `ntfs_pbr_bootmgr(...)`      |
+
+bootrec's flags are slightly more verbose (-pe vs -bootmgr) because the
+ms-sys names are domain-jargon-y; new users shouldn't have to know that
+"PE" means "Preinstall Environment" to write a Win 7 boot record. The
+old names are accepted as aliases for muscle memory.
+
 ## License
 
 `bootrec` is MIT-2.0. Independent of usbwin (could be used by other
