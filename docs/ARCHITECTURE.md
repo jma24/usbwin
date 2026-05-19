@@ -31,9 +31,9 @@ on as a path dep today and a published crate later.
 4. **Shell-out is rare and centralized.** Partition tables are bytes, not `fdisk` calls. The only allowed shell-outs are `diskutil unmountDisk` / `mountDisk` / `eject`, wrapped in `usbwin-disk::macos` with retry + error context.
 5. **Test pyramid that doesn't burn USB sticks.**
    - Unit: BPB splice, MBR layout, ISO classifier on fixture bytes.
-   - Golden: dry-run end-to-end into `Vec<u8>`, `assert_eq!` against checked-in golden bytes.
-   - QEMU smoke: write to a disk image, boot it under qemu-system-i386, scrape serial output.
-   - Hardware (manual): 5 scenarios in [`HARDWARE_TESTS.md`](HARDWARE_TESTS.md), run before each release.
+   - Golden: byte-for-byte comparison of the four boot-record-producing functions (Win 7 MBR, XP MBR, BOOTMGR multi-sector PBR, NTLDR PBR) against checked-in goldens. Lives in `pipeline::boot_records` (the `#[cfg(test)]` mod). Catches "bootrec bumped and now we produce different bytes" automatically. Goldens at `tests/golden/*.bin`; refresh with `UPDATE_GOLDENS=1 cargo test ...`. The QEMU and real-hardware layers below cover boot-behavior; this layer covers byte stability.
+   - QEMU smoke: write to a disk image, boot it under qemu-system-i386, scrape serial output. *(Lives in bootrec, not usbwin — bootrec is where the byte production happens; usbwin's wrapper is what the golden tests cover.)*
+   - Hardware (manual): the scenarios in [`HARDWARE_TESTS.md`](HARDWARE_TESTS.md), run before each release.
 
 ## MVP target
 

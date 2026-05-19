@@ -4,6 +4,7 @@
 //! macOS device backend, `usbwin-boot` produces the byte sequences, and this
 //! module wires them all together per the mode-dispatch table.
 
+pub mod boot_records;
 pub mod confirm;
 pub mod diskutil;
 pub mod hybrid;

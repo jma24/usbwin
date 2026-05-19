@@ -31,9 +31,7 @@ use usbwin_core::{BootRecordImpl, Config, Device, WritePlan};
 use usbwin_disk::raw::{OpenMode, RawDevice};
 use usbwin_disk::DeviceInfo;
 
-use super::diskutil;
-
-const SECTOR_SIZE: u64 = 512;
+use super::{boot_records, diskutil};
 
 pub fn run(plan: &WritePlan, info: &DeviceInfo, config: &Config) -> Result<()> {
     let bsd_path = info.path.replace("/dev/r", "/dev/");
@@ -45,12 +43,7 @@ pub fn run(plan: &WritePlan, info: &DeviceInfo, config: &Config) -> Result<()> {
     let ms_sys = match config.boot_record_impl {
         BootRecordImpl::MsSys => Some(diskutil::find_ms_sys()?),
         BootRecordImpl::Bootrec => {
-            if !bootrec::blobs::embedded() {
-                bail!(
-                    "bootrec was built without embedded boot blobs; rebuild \
-                     with --features embed-boot-asm or pass --boot-record=ms-sys"
-                );
-            }
+            boot_records::ensure_embedded_blobs()?;
             None
         }
     };
@@ -134,9 +127,7 @@ pub fn run(plan: &WritePlan, info: &DeviceInfo, config: &Config) -> Result<()> {
 }
 
 fn write_mbr_sector(info: &DeviceInfo) -> Result<()> {
-    let disk_sectors = info.size_bytes / SECTOR_SIZE;
-    let mbr = bootrec::mbr_win7(disk_sectors)
-        .map_err(|e| anyhow!("building MBR: {e}"))?;
+    let mbr = boot_records::build_mbr_win7(info.size_bytes)?;
 
     let mut dev = RawDevice::open(&info.path, OpenMode::ReadWrite, &info.model)
         .context("opening whole disk for MBR write")?;
@@ -168,11 +159,7 @@ fn splice_pbr(partition_raw: &str, model: &str, verify: bool) -> Result<()> {
     let mut existing = vec![0u8; 1024];
     dev.read_at(0, &mut existing).map_err(anyhow_from_core)?;
 
-    let spliced = bootrec::splice_fat32_pbr_multi(
-        &existing,
-        bootrec::FAT32_PBR_BOOTMGR_MULTI_BOOT,
-    )
-    .map_err(|e| anyhow!("splice_fat32_pbr_multi: {e}"))?;
+    let spliced = boot_records::splice_pbr_bootmgr(&existing)?;
 
     dev.write_at(0, &spliced).map_err(anyhow_from_core)?;
     dev.sync().map_err(anyhow_from_core)?;

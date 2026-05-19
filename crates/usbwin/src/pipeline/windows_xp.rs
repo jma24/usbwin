@@ -27,11 +27,10 @@ use usbwin_core::{BootRecordImpl, Config, Device, WritePlan};
 use usbwin_disk::raw::{OpenMode, RawDevice};
 use usbwin_disk::DeviceInfo;
 
+use super::boot_records;
 use super::diskutil;
 use super::windows_xp_sif;
 use super::windows_xp_unattended;
-
-const SECTOR_SIZE: u64 = 512;
 
 pub fn run(plan: &WritePlan, info: &DeviceInfo, config: &Config) -> Result<()> {
     let bsd_path = info.path.replace("/dev/r", "/dev/");
@@ -43,12 +42,7 @@ pub fn run(plan: &WritePlan, info: &DeviceInfo, config: &Config) -> Result<()> {
     let ms_sys = match config.boot_record_impl {
         BootRecordImpl::MsSys => Some(diskutil::find_ms_sys()?),
         BootRecordImpl::Bootrec => {
-            if !bootrec::blobs::embedded() {
-                bail!(
-                    "bootrec was built without embedded boot blobs; rebuild \
-                     with --features embed-boot-asm or pass --boot-record=ms-sys"
-                );
-            }
+            boot_records::ensure_embedded_blobs()?;
             None
         }
     };
@@ -218,9 +212,7 @@ fn write_unattended(usb_mount: &Path, config: &Config) -> Result<()> {
 }
 
 fn write_mbr_sector(info: &DeviceInfo) -> Result<()> {
-    let disk_sectors = info.size_bytes / SECTOR_SIZE;
-    let mbr = bootrec::mbr_xp(disk_sectors)
-        .map_err(|e| anyhow!("building MBR: {e}"))?;
+    let mbr = boot_records::build_mbr_xp(info.size_bytes)?;
     let mut dev = RawDevice::open(&info.path, OpenMode::ReadWrite, &info.model)
         .context("opening whole disk for MBR write")?;
     dev.write_at(0, &mbr).map_err(anyhow_from_core)?;
@@ -242,8 +234,7 @@ fn splice_ntldr_pbr(partition_raw: &str, model: &str, verify: bool) -> Result<()
     let mut existing = [0u8; 512];
     dev.read_at(0, &mut existing).map_err(anyhow_from_core)?;
 
-    let spliced = bootrec::splice_fat32_pbr(&existing, bootrec::FAT32_PBR_NTLDR_BOOT)
-        .map_err(|e| anyhow!("splice_fat32_pbr (NTLDR): {e}"))?;
+    let spliced = boot_records::splice_pbr_ntldr(&existing)?;
 
     dev.write_at(0, &spliced).map_err(anyhow_from_core)?;
     dev.sync().map_err(anyhow_from_core)?;
@@ -251,7 +242,7 @@ fn splice_ntldr_pbr(partition_raw: &str, model: &str, verify: bool) -> Result<()
     if verify {
         let mut readback = [0u8; 512];
         dev.read_at(0, &mut readback).map_err(anyhow_from_core)?;
-        if readback != spliced {
+        if spliced != readback {
             bail!("PBR splice verify mismatch");
         }
     }
