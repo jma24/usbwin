@@ -23,7 +23,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use usbwin_core::{Config, Device, WritePlan};
+use usbwin_core::{BootRecordImpl, Config, Device, WritePlan};
 use usbwin_disk::raw::{OpenMode, RawDevice};
 use usbwin_disk::DeviceInfo;
 
@@ -38,8 +38,20 @@ pub fn run(plan: &WritePlan, info: &DeviceInfo, config: &Config) -> Result<()> {
     let partition_raw = format!("{}s1", info.path);
     let partition_bsd = format!("{bsd_path}s1");
 
-    // Fail fast if ms-sys isn't present (boot-records are mandatory for XP).
-    let ms_sys = diskutil::find_ms_sys()?;
+    // Boot records are mandatory for XP; resolve the selected backend up
+    // front so we fail before any destructive write.
+    let ms_sys = match config.boot_record_impl {
+        BootRecordImpl::MsSys => Some(diskutil::find_ms_sys()?),
+        BootRecordImpl::Bootrec => {
+            if !bootrec::blobs::embedded() {
+                bail!(
+                    "bootrec was built without embedded boot blobs; rebuild \
+                     with --features embed-boot-asm or pass --boot-record=ms-sys"
+                );
+            }
+            None
+        }
+    };
 
     // Validate optional inputs up front so we don't get halfway through a
     // write and discover a missing file.
@@ -60,7 +72,8 @@ pub fn run(plan: &WritePlan, info: &DeviceInfo, config: &Config) -> Result<()> {
     write_mbr_sector(info)?;
     let _ = diskutil::unmount_disk(&bsd_path);
     diskutil::mount_disk(&bsd_path).context("mount after partition write")?;
-    let _ = diskutil::unmount_disk(&bsd_path);
+    diskutil::unmount_disk_force(&bsd_path)
+        .context("force-unmount before format (disk arbitration race)")?;
 
     diskutil::newfs_msdos_fat32(&partition_raw, &plan.label)
         .with_context(|| format!("formatting {partition_raw} as FAT32"))?;
@@ -87,14 +100,30 @@ pub fn run(plan: &WritePlan, info: &DeviceInfo, config: &Config) -> Result<()> {
 
     diskutil::unmount_disk(&bsd_path).context("unmount before boot records")?;
 
-    // Write the XP-era boot records via ms-sys (FIELD_FINDINGS §1 maps these
-    // to --mbr and --fat32nt; --fat32pe is Vista+ and would load bootmgr,
-    // not NTLDR, which is wrong for XP).
-    diskutil::ms_sys_mbr(&ms_sys, &info.path)
-        .context("ms-sys --mbr (writing Win 2000/XP/2003 MBR boot code)")?;
-    let _ = diskutil::unmount_disk(&bsd_path);
-    diskutil::ms_sys_fat32nt(&ms_sys, &partition_bsd)
-        .context("ms-sys --fat32nt (writing NTLDR-loading FAT32 PBR)")?;
+    // Write the XP-era boot records. ms-sys path uses --mbr + --fat32nt
+    // (FIELD_FINDINGS §1; --fat32pe would load bootmgr, not NTLDR, which
+    // is wrong for XP). Bootrec path uses MBR_XP_BOOT (already in sector 0
+    // from write_mbr_sector) and the single-sector FAT32 NTLDR PBR.
+    match config.boot_record_impl {
+        BootRecordImpl::MsSys => {
+            let ms_sys = ms_sys.as_ref().expect("ms-sys resolved above");
+            diskutil::ms_sys_mbr(ms_sys, &bsd_path)
+                .context("ms-sys --mbr (writing Win 2000/XP/2003 MBR boot code)")?;
+            // Disk arbitration auto-mounts the FAT32 partition the
+            // moment --mbr returns. Force-unmount so --fat32nt's open
+            // of /dev/disk6s1 doesn't hit EBUSY.
+            diskutil::unmount_disk_force(&bsd_path)
+                .context("force-unmount between ms-sys --mbr and --fat32nt")?;
+            diskutil::ms_sys_fat32nt(ms_sys, &partition_bsd)
+                .context("ms-sys --fat32nt (writing NTLDR-loading FAT32 PBR)")?;
+        }
+        BootRecordImpl::Bootrec => {
+            diskutil::unmount_disk_force(&bsd_path)
+                .context("force-unmount before bootrec PBR splice")?;
+            splice_ntldr_pbr(&partition_raw, &info.model, config.verify)
+                .context("bootrec FAT32 NTLDR PBR splice")?;
+        }
+    }
 
     let _ = diskutil::unmount_disk(&bsd_path);
     diskutil::eject(&bsd_path).context("eject after write")?;
@@ -199,6 +228,31 @@ fn write_mbr_sector(info: &DeviceInfo) -> Result<()> {
     dev.read_at(0, &mut readback).map_err(anyhow_from_core)?;
     if readback != mbr {
         bail!("MBR write verify mismatch");
+    }
+    Ok(())
+}
+
+/// Splice the single-sector FAT32 NTLDR PBR over the freshly-formatted
+/// partition's sector 0. Preserves the BPB that newfs_msdos wrote.
+fn splice_ntldr_pbr(partition_raw: &str, model: &str, verify: bool) -> Result<()> {
+    let mut dev = RawDevice::open(partition_raw, OpenMode::ReadWrite, model)
+        .with_context(|| format!("opening {partition_raw} for PBR splice"))?;
+
+    let mut existing = [0u8; 512];
+    dev.read_at(0, &mut existing).map_err(anyhow_from_core)?;
+
+    let spliced = bootrec::splice_fat32_pbr(&existing, bootrec::FAT32_PBR_NTLDR_BOOT)
+        .map_err(|e| anyhow!("splice_fat32_pbr (NTLDR): {e}"))?;
+
+    dev.write_at(0, &spliced).map_err(anyhow_from_core)?;
+    dev.sync().map_err(anyhow_from_core)?;
+
+    if verify {
+        let mut readback = [0u8; 512];
+        dev.read_at(0, &mut readback).map_err(anyhow_from_core)?;
+        if readback != spliced {
+            bail!("PBR splice verify mismatch");
+        }
     }
     Ok(())
 }

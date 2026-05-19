@@ -29,7 +29,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 usbwin-core = { path = "crates/usbwin-core" }
 usbwin-iso  = { path = "crates/usbwin-iso" }
 usbwin-disk = { path = "crates/usbwin-disk" }
-bootrec     = { path = "../bootrec" }
+bootrec     = { path = "../bootrec", features = ["embed-boot-asm"] }
 
 [profile.release]
 lto = "thin"

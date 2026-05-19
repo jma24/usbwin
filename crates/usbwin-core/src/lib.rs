@@ -68,6 +68,29 @@ pub struct Config {
     pub xp_product_key: Option<String>,
     pub xp_computer_name: Option<String>,
     pub xp_full_name: Option<String>,
+    /// Which implementation writes the MBR boot code and partition boot
+    /// record. `Bootrec` links the native Rust library in-process;
+    /// `MsSys` shells out to the upstream tool. See
+    /// docs/V1_BOOTREC_LIBRARY.md.
+    pub boot_record_impl: BootRecordImpl,
+}
+
+/// Backend used to write MBR boot code and the partition boot record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BootRecordImpl {
+    /// Shell out to the external `ms-sys` binary. Legacy v0.2 path.
+    MsSys,
+    /// Use the in-process `bootrec` library. Default from v1.0.
+    Bootrec,
+}
+
+impl BootRecordImpl {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            BootRecordImpl::MsSys => "ms-sys",
+            BootRecordImpl::Bootrec => "bootrec",
+        }
+    }
 }
 
 /// What the user asked for at the CLI. `Auto` triggers ISO inspection to

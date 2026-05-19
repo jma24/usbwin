@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, ValueEnum};
-use usbwin_core::ModeRequest;
+use usbwin_core::{BootRecordImpl, ModeRequest};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -87,6 +87,29 @@ struct Cli {
     /// `winnt.sif`. Defaults to "usbwin user".
     #[arg(long, value_name = "NAME")]
     xp_full_name: Option<String>,
+
+    /// Backend used to write the MBR boot code and partition boot
+    /// record. `bootrec` (default) links the native Rust library
+    /// in-process; `ms-sys` shells out to the upstream binary at
+    /// `$USBWIN_MS_SYS` / PATH (legacy v0.2 path).
+    #[arg(long = "boot-record", value_enum, default_value_t = BootRecordArg::Bootrec)]
+    boot_record: BootRecordArg,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+enum BootRecordArg {
+    Bootrec,
+    #[value(name = "ms-sys")]
+    MsSys,
+}
+
+impl From<BootRecordArg> for BootRecordImpl {
+    fn from(b: BootRecordArg) -> Self {
+        match b {
+            BootRecordArg::Bootrec => BootRecordImpl::Bootrec,
+            BootRecordArg::MsSys => BootRecordImpl::MsSys,
+        }
+    }
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
@@ -136,6 +159,7 @@ fn main() -> ExitCode {
         xp_product_key: cli.xp_product_key,
         xp_computer_name: cli.xp_computer_name,
         xp_full_name: cli.xp_full_name,
+        boot_record_impl: cli.boot_record.into(),
     };
 
     tracing::info!(

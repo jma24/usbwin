@@ -56,7 +56,7 @@ pub fn run(config: &Config) -> Result<()> {
     match plan.mode {
         BootMode::Hybrid => hybrid::run(&plan, &info, config.verify)
             .context("hybrid mode pipeline failed"),
-        BootMode::Windows => windows::run(&plan, &info, config.verify)
+        BootMode::Windows => windows::run(&plan, &info, config)
             .context("Windows 7+ mode pipeline failed"),
         BootMode::WindowsXp => windows_xp::run(&plan, &info, config)
             .context("Windows XP mode pipeline failed"),

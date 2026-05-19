@@ -27,7 +27,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use usbwin_core::{Device, WritePlan};
+use usbwin_core::{BootRecordImpl, Config, Device, WritePlan};
 use usbwin_disk::raw::{OpenMode, RawDevice};
 use usbwin_disk::DeviceInfo;
 
@@ -35,14 +35,25 @@ use super::diskutil;
 
 const SECTOR_SIZE: u64 = 512;
 
-pub fn run(plan: &WritePlan, info: &DeviceInfo, _verify: bool) -> Result<()> {
+pub fn run(plan: &WritePlan, info: &DeviceInfo, config: &Config) -> Result<()> {
     let bsd_path = info.path.replace("/dev/r", "/dev/");
     let partition_raw = format!("{}s1", info.path);
     let partition_bsd = format!("{bsd_path}s1");
 
-    // Find ms-sys up front so we fail fast if it's missing (v0.2 pragmatic
-    // boot-record path; see docs/V0.2_PBR_STATUS.md).
-    let ms_sys = diskutil::find_ms_sys()?;
+    // Resolve the ms-sys binary up front (only if we'll actually use it),
+    // so we fail before any destructive write.
+    let ms_sys = match config.boot_record_impl {
+        BootRecordImpl::MsSys => Some(diskutil::find_ms_sys()?),
+        BootRecordImpl::Bootrec => {
+            if !bootrec::blobs::embedded() {
+                bail!(
+                    "bootrec was built without embedded boot blobs; rebuild \
+                     with --features embed-boot-asm or pass --boot-record=ms-sys"
+                );
+            }
+            None
+        }
+    };
 
     // 1. Unmount everything mounted from this disk.
     diskutil::unmount_disk(&bsd_path).context("unmount before partition write")?;
@@ -51,10 +62,14 @@ pub fn run(plan: &WritePlan, info: &DeviceInfo, _verify: bool) -> Result<()> {
     write_mbr_sector(info)?;
 
     // 3. Kernel needs to re-read the partition table. The simplest portable
-    //    way on macOS is unmount + immediate mount cycle.
+    //    way on macOS is unmount + immediate mount cycle. The final
+    //    unmount uses `force` because disk arbitration auto-mounts any
+    //    recognized FAT32 (e.g. left over from a prior failed run) before
+    //    we get the chance to format, and a plain unmount races.
     let _ = diskutil::unmount_disk(&bsd_path);
     diskutil::mount_disk(&bsd_path).context("mount after partition write")?;
-    let _ = diskutil::unmount_disk(&bsd_path); // unmount again before format
+    diskutil::unmount_disk_force(&bsd_path)
+        .context("force-unmount before format (disk arbitration race)")?;
 
     // 4. Format the partition.
     diskutil::newfs_msdos_fat32(&partition_raw, &plan.label)
@@ -79,13 +94,32 @@ pub fn run(plan: &WritePlan, info: &DeviceInfo, _verify: bool) -> Result<()> {
     // 9. Unmount the USB so we can write the boot records.
     diskutil::unmount_disk(&bsd_path).context("unmount before MBR/PBR write")?;
 
-    // 10. Write the Win 7 boot records via ms-sys (FIELD_FINDINGS §8).
-    //     MBR (whole-sector, raw OK) + FAT32 PE PBR (sub-sector, must be buffered).
-    diskutil::ms_sys_mbr7(&ms_sys, &info.path)
-        .context("ms-sys --mbr7 (writing Win 7 MBR boot code)")?;
-    let _ = diskutil::unmount_disk(&bsd_path);
-    diskutil::ms_sys_fat32pe(&ms_sys, &partition_bsd)
-        .context("ms-sys --fat32pe (writing FAT32 PE PBR)")?;
+    // 10. Write the Win 7 boot records.
+    //     MBR (whole-sector, raw OK) + FAT32 BOOTMGR PBR (multi-sector).
+    match config.boot_record_impl {
+        BootRecordImpl::MsSys => {
+            let ms_sys = ms_sys.as_ref().expect("ms-sys resolved above");
+            diskutil::ms_sys_mbr7(ms_sys, &bsd_path)
+                .context("ms-sys --mbr7 (writing Win 7 MBR boot code)")?;
+            // Disk arbitration auto-mounts the FAT32 partition the
+            // moment --mbr7 returns. Force-unmount so --fat32pe's open
+            // of /dev/diskNs1 doesn't hit EBUSY.
+            diskutil::unmount_disk_force(&bsd_path)
+                .context("force-unmount between ms-sys --mbr7 and --fat32pe")?;
+            diskutil::ms_sys_fat32pe(ms_sys, &partition_bsd)
+                .context("ms-sys --fat32pe (writing FAT32 PE PBR)")?;
+        }
+        BootRecordImpl::Bootrec => {
+            // MBR boot code was already written by write_mbr_sector
+            // (bootrec::mbr_win7 embeds MBR_WIN7_BOOT in bytes 0..440);
+            // the ms-sys path overwrote it, the bootrec path leaves it
+            // in place. Just splice the partition boot record.
+            diskutil::unmount_disk_force(&bsd_path)
+                .context("force-unmount before bootrec PBR splice")?;
+            splice_pbr(&partition_raw, &info.model, config.verify)
+                .context("bootrec FAT32 BOOTMGR PBR splice")?;
+        }
+    }
 
     // 11. Unmount + eject.
     let _ = diskutil::unmount_disk(&bsd_path);
@@ -118,25 +152,33 @@ fn write_mbr_sector(info: &DeviceInfo) -> Result<()> {
     Ok(())
 }
 
-// Dead code in v0.2 (replaced by ms-sys --fat32pe). Kept around for v1.0
-// when a clean-room PBR replaces the ms-sys dependency.
-#[allow(dead_code)]
+/// Splice the multi-sector FAT32 BOOTMGR PBR over the freshly-formatted
+/// partition's reserved area. Reads the formatter's first two sectors
+/// (sector 0 = boot sector with BPB; sector 1 = FSInfo) and hands both
+/// to `bootrec::splice_fat32_pbr_multi`, which:
+///   - preserves the BPB at bytes 3..90 of sector 0,
+///   - preserves the FSInfo sector unchanged at LBA 1,
+///   - lays stage 2 at LBA 2.
 fn splice_pbr(partition_raw: &str, model: &str, verify: bool) -> Result<()> {
     let mut dev = RawDevice::open(partition_raw, OpenMode::ReadWrite, model)
         .with_context(|| format!("opening {partition_raw} for PBR splice"))?;
 
-    // Read the freshly-formatted PBR (carries the BPB from newfs_msdos).
-    let mut existing = [0u8; 512];
+    // Read the freshly-formatted reserved area (sector 0 = BPB,
+    // sector 1 = FSInfo). Both feed into the splice.
+    let mut existing = vec![0u8; 1024];
     dev.read_at(0, &mut existing).map_err(anyhow_from_core)?;
 
-    let spliced = bootrec::splice_fat32_pbr(&existing, bootrec::FAT32_PBR_BOOTMGR_BOOT)
-        .map_err(|e| anyhow!("splice_fat32_pbr: {e}"))?;
+    let spliced = bootrec::splice_fat32_pbr_multi(
+        &existing,
+        bootrec::FAT32_PBR_BOOTMGR_MULTI_BOOT,
+    )
+    .map_err(|e| anyhow!("splice_fat32_pbr_multi: {e}"))?;
 
     dev.write_at(0, &spliced).map_err(anyhow_from_core)?;
     dev.sync().map_err(anyhow_from_core)?;
 
     if verify {
-        let mut readback = [0u8; 512];
+        let mut readback = vec![0u8; spliced.len()];
         dev.read_at(0, &mut readback).map_err(anyhow_from_core)?;
         if readback != spliced {
             bail!("PBR splice verify mismatch");

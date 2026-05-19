@@ -11,6 +11,16 @@ pub fn unmount_disk(bsd_path: &str) -> Result<()> {
         .with_context(|| format!("diskutil unmountDisk {bsd_path}"))
 }
 
+/// Forceful variant of [`unmount_disk`]. Use this just before destructive
+/// per-partition operations (e.g. `newfs_msdos`) — macOS disk arbitration
+/// races to auto-mount any recognized filesystem after a partition-table
+/// write, and the non-force unmount can return before that auto-mount
+/// settles. `force` waits for and overrides the in-flight mount.
+pub fn unmount_disk_force(bsd_path: &str) -> Result<()> {
+    run_diskutil(&["unmountDisk", "force", bsd_path])
+        .with_context(|| format!("diskutil unmountDisk force {bsd_path}"))
+}
+
 #[allow(dead_code)]
 pub fn mount_disk(bsd_path: &str) -> Result<()> {
     run_diskutil(&["mountDisk", bsd_path])
@@ -130,21 +140,43 @@ pub fn find_ms_sys() -> Result<PathBuf> {
     )
 }
 
-/// Write the Windows 7 MBR boot code via `ms-sys --mbr7 /dev/rdiskN`.
-/// Per FIELD_FINDINGS §1: whole-sector write, raw device OK.
-pub fn ms_sys_mbr7(ms_sys: &Path, raw_disk_path: &str) -> Result<()> {
+/// Write the Windows 7 MBR boot code via `ms-sys --mbr7 /dev/diskN`.
+/// `--mbr7` writes only the 440-byte boot code (preserving the partition
+/// table) — that's a sub-sector write, so it must go to the **buffered**
+/// device. On `/dev/rdiskN` (raw character device) the kernel rejects
+/// the partial-sector write and ms-sys reports "Failed writing ..." with
+/// no further detail. Validated empirically 2026-05-19.
+pub fn ms_sys_mbr7(ms_sys: &Path, buffered_disk_path: &str) -> Result<()> {
     let output = Command::new(ms_sys)
         .args(["-f", "--mbr7"])
-        .arg(raw_disk_path)
+        .arg(buffered_disk_path)
         .output()
-        .with_context(|| format!("invoking ms-sys --mbr7 {raw_disk_path}"))?;
+        .with_context(|| format!("invoking ms-sys --mbr7 {buffered_disk_path}"))?;
     if !output.status.success() {
-        bail!(
-            "ms-sys --mbr7 failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+        bail!("ms-sys --mbr7 failed: {}", format_ms_sys_failure(&output));
     }
     Ok(())
+}
+
+fn format_ms_sys_failure(out: &std::process::Output) -> String {
+    // ms-sys often prints its error message to stdout, not stderr. Surface
+    // both, plus the exit status.
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let status = match out.status.code() {
+        Some(c) => format!("exit {c}"),
+        None => "killed by signal".to_string(),
+    };
+    let mut parts = vec![status];
+    let stderr = stderr.trim();
+    let stdout = stdout.trim();
+    if !stderr.is_empty() {
+        parts.push(format!("stderr: {stderr}"));
+    }
+    if !stdout.is_empty() {
+        parts.push(format!("stdout: {stdout}"));
+    }
+    parts.join("; ")
 }
 
 /// Write the FAT32 PE (Win 7/8/10 BOOTMGR-loading) PBR via
@@ -158,27 +190,22 @@ pub fn ms_sys_fat32pe(ms_sys: &Path, partition_buffered_path: &str) -> Result<()
         .output()
         .with_context(|| format!("invoking ms-sys --fat32pe {partition_buffered_path}"))?;
     if !output.status.success() {
-        bail!(
-            "ms-sys --fat32pe failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+        bail!("ms-sys --fat32pe failed: {}", format_ms_sys_failure(&output));
     }
     Ok(())
 }
 
-/// Write the Win 2000/XP/2003 MBR boot code via `ms-sys --mbr /dev/rdiskN`.
-/// XP analogue of `ms_sys_mbr7`.
-pub fn ms_sys_mbr(ms_sys: &Path, raw_disk_path: &str) -> Result<()> {
+/// Write the Win 2000/XP/2003 MBR boot code via `ms-sys --mbr /dev/diskN`.
+/// XP analogue of `ms_sys_mbr7`; same sub-sector-write constraint — must
+/// use the buffered device, not `/dev/rdiskN`.
+pub fn ms_sys_mbr(ms_sys: &Path, buffered_disk_path: &str) -> Result<()> {
     let output = Command::new(ms_sys)
         .args(["-f", "--mbr"])
-        .arg(raw_disk_path)
+        .arg(buffered_disk_path)
         .output()
-        .with_context(|| format!("invoking ms-sys --mbr {raw_disk_path}"))?;
+        .with_context(|| format!("invoking ms-sys --mbr {buffered_disk_path}"))?;
     if !output.status.success() {
-        bail!(
-            "ms-sys --mbr failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+        bail!("ms-sys --mbr failed: {}", format_ms_sys_failure(&output));
     }
     Ok(())
 }
@@ -192,10 +219,7 @@ pub fn ms_sys_fat32nt(ms_sys: &Path, partition_buffered_path: &str) -> Result<()
         .output()
         .with_context(|| format!("invoking ms-sys --fat32nt {partition_buffered_path}"))?;
     if !output.status.success() {
-        bail!(
-            "ms-sys --fat32nt failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+        bail!("ms-sys --fat32nt failed: {}", format_ms_sys_failure(&output));
     }
     Ok(())
 }
