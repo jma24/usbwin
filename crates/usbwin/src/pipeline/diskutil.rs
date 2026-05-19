@@ -39,8 +39,16 @@ pub fn eject(bsd_path: &str) -> Result<()> {
 /// disk (`disk6`). The MBR must already have been written so the partition
 /// exists.
 pub fn newfs_msdos_fat32(partition_path: &str, label: &str) -> Result<()> {
+    // -c 8 → 8 sectors per cluster = 4 KiB clusters. newfs_msdos defaults
+    // to 32 KiB clusters (-c 64) on partitions > 32 GiB, which XP
+    // setupldr's simple FAT walker can't handle reliably — it returns
+    // "txtsetup.sif corrupt or missing, status 18" even when the file
+    // is present and intact. 4 KiB clusters work across all XP/Win 7
+    // setupldr / bootmgr variants we care about. The cost (more FAT
+    // entries, slightly slower large-file writes) is negligible for our
+    // ≤4 GB ISO payloads.
     let output = Command::new("newfs_msdos")
-        .args(["-F", "32", "-v", label, partition_path])
+        .args(["-F", "32", "-c", "8", "-v", label, partition_path])
         .output()
         .with_context(|| format!("spawning newfs_msdos for {partition_path}"))?;
     if !output.status.success() {
