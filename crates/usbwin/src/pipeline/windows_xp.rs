@@ -135,24 +135,57 @@ pub fn run(plan: &WritePlan, info: &DeviceInfo, config: &Config) -> Result<()> {
     // replace the 11-byte "NTLDR      " filename with "$LDR$      ", write
     // as a file. NTLDR loads it as a bootsector entry via boot.ini, which
     // then chainloads $LDR$ (setupldr.bin) to start text-mode setup.
+    //
+    // Non-fatal: bootrec's NTLDR multi-sector PBR currently puts the NTLDR
+    // string in stage 2 (sector 2), unreachable from a single-sector
+    // BOOTSECT.DAT load. We skip with a warning rather than aborting so
+    // the user can still test the chain up to the "<Windows root>\\system32
+    // \\hal.dll missing" fallback NTLDR shows when BOOTSECT.DAT is absent.
+    // ms-sys's --fat32nt puts the string at offset 0x170 in sector 0, so
+    // this works for `--boot-record=ms-sys`. The proper fix (a bootrec
+    // primitive that emits a single-sector raw-LBA loader for $LDR$) is
+    // tracked separately.
     let pbr_bytes = read_pbr_sector0(&partition_raw, &info.model)
         .context("reading PBR back for BOOTSECT.DAT generation")?;
-    let bootsect_dat = xp_staging::build_bootsect_dat(&pbr_bytes)
-        .context("patching PBR copy for BOOTSECT.DAT")?;
+    let bootsect_dat = xp_staging::build_bootsect_dat(&pbr_bytes);
 
-    // Re-mount to write the file, then unmount before eject.
+    // Re-mount to write the file (or to leave it absent), then unmount.
     diskutil::mount_disk(&bsd_path)
         .context("re-mount to write BOOTSECT.DAT")?;
     let usb_mount2 = find_mount_for_label(&plan.label).ok_or_else(|| {
         anyhow!("re-mounted partition didn't reappear in /Volumes")
     })?;
-    xp_staging::write_bootsect_dat(&usb_mount2, &bootsect_dat)
-        .context("writing $WIN_NT$.~BT/BOOTSECT.DAT")?;
-    println!(
-        "usbwin: wrote {}/$WIN_NT$.~BT/BOOTSECT.DAT ({} bytes, patched from on-disk PBR)",
-        usb_mount2.display(),
-        bootsect_dat.len()
-    );
+    match bootsect_dat {
+        Ok(bytes) => {
+            xp_staging::write_bootsect_dat(&usb_mount2, &bytes)
+                .context("writing $WIN_NT$.~BT/BOOTSECT.DAT")?;
+            println!(
+                "usbwin: wrote {}/$WIN_NT$.~BT/BOOTSECT.DAT ({} bytes, patched from on-disk PBR)",
+                usb_mount2.display(),
+                bytes.len()
+            );
+        }
+        Err(e) => {
+            eprintln!();
+            eprintln!("usbwin: WARNING — BOOTSECT.DAT not generated:");
+            eprintln!("    {e:#}");
+            eprintln!(
+                "usbwin: NTLDR boot.ini menu will render, but selecting \
+                 'text mode setup'"
+            );
+            eprintln!(
+                "        will fall through to the default Windows load path \
+                 and fail with"
+            );
+            eprintln!(
+                "        '<Windows root>\\\\system32\\\\hal.dll missing'. \
+                 Use --boot-record=ms-sys"
+            );
+            eprintln!("        for a working BOOTSECT.DAT, or wait for bootrec's");
+            eprintln!("        single-sector $LDR$ chainloader primitive.");
+            eprintln!();
+        }
+    }
 
     let _ = diskutil::unmount_disk(&bsd_path);
     diskutil::eject(&bsd_path).context("eject after write")?;
