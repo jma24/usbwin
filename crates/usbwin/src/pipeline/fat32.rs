@@ -120,6 +120,41 @@ pub struct FileExtent {
     pub file_size_bytes: u32,
 }
 
+/// A contiguous run of partition-relative LBAs. Matches the shape
+/// bootrec's `build_xp_setup_chain_bootsect` expects (see
+/// bootrec/docs/XP_SETUP_CHAIN_BOOTSECT_SPEC.md). On the wire: 6 bytes
+/// per run (4 + 2), so even a moderately-fragmented `$LDR$` fits in the
+/// remaining sector-0 space after boot code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LbaRun {
+    pub start_lba: u32,
+    pub sector_count: u16,
+}
+
+/// Coalesce a flat ascending LBA list into the smallest set of `LbaRun`s
+/// where consecutive LBAs collapse into one run. Splits a single
+/// fragment if its length would overflow `u16` (≥65,536 sectors ≈ 32 MiB
+/// — won't happen for `$LDR$` but defensively defined).
+pub fn coalesce_lbas_to_runs(lbas: &[u32]) -> Vec<LbaRun> {
+    if lbas.is_empty() {
+        return Vec::new();
+    }
+    let mut runs = Vec::new();
+    let mut start = lbas[0];
+    let mut count: u16 = 1;
+    for &lba in &lbas[1..] {
+        if lba == start.saturating_add(count as u32) && count < u16::MAX {
+            count += 1;
+        } else {
+            runs.push(LbaRun { start_lba: start, sector_count: count });
+            start = lba;
+            count = 1;
+        }
+    }
+    runs.push(LbaRun { start_lba: start, sector_count: count });
+    runs
+}
+
 /// Find a file in the FAT32 root directory by its 11-byte 8.3 name (e.g.
 /// `b"$LDR$      "` for `$LDR$`). Walks the root cluster chain, scans
 /// directory entries, then walks the FAT chain to enumerate every cluster
@@ -393,6 +428,74 @@ mod tests {
         let expected_lbas: Vec<u32> = (13..21).chain(21..29).collect();
         assert_eq!(ext.lbas, expected_lbas);
         assert_eq!(ext.file_size_bytes, 8192);
+    }
+
+    #[test]
+    fn coalesce_empty() {
+        assert_eq!(coalesce_lbas_to_runs(&[]), Vec::<LbaRun>::new());
+    }
+
+    #[test]
+    fn coalesce_single() {
+        assert_eq!(
+            coalesce_lbas_to_runs(&[42]),
+            vec![LbaRun { start_lba: 42, sector_count: 1 }]
+        );
+    }
+
+    #[test]
+    fn coalesce_one_contiguous_run() {
+        assert_eq!(
+            coalesce_lbas_to_runs(&[100, 101, 102, 103]),
+            vec![LbaRun { start_lba: 100, sector_count: 4 }]
+        );
+    }
+
+    #[test]
+    fn coalesce_fragmented() {
+        // Two clusters of 8 sectors each, with a 100-sector gap between.
+        let lbas: Vec<u32> = (13..21).chain(121..129).collect();
+        assert_eq!(
+            coalesce_lbas_to_runs(&lbas),
+            vec![
+                LbaRun { start_lba: 13, sector_count: 8 },
+                LbaRun { start_lba: 121, sector_count: 8 },
+            ]
+        );
+    }
+
+    #[test]
+    fn coalesce_synthetic_ldr_extent() {
+        // The synthetic_partition test above gives $LDR$ at LBAs
+        // 13..21 + 21..29 — that's one contiguous 16-sector run.
+        let img = synthetic_partition();
+        let bpb = Bpb::parse(&img[..512]).unwrap();
+        let mut dev = MemoryDevice {
+            bytes: img,
+            label: "synthetic".into(),
+        };
+        let ext = find_file_extent(&mut dev, &bpb, b"$LDR$      ").unwrap().unwrap();
+        let runs = coalesce_lbas_to_runs(&ext.lbas);
+        assert_eq!(
+            runs,
+            vec![LbaRun { start_lba: 13, sector_count: 16 }],
+            "freshly-allocated file should be a single run"
+        );
+    }
+
+    #[test]
+    fn coalesce_splits_at_u16_max() {
+        // 70 000 consecutive LBAs would otherwise overflow u16 sector_count.
+        // Must split into two runs.
+        let lbas: Vec<u32> = (0..70_000).collect();
+        let runs = coalesce_lbas_to_runs(&lbas);
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0], LbaRun { start_lba: 0, sector_count: u16::MAX });
+        assert_eq!(runs[1].start_lba, u16::MAX as u32);
+        assert_eq!(
+            runs[0].sector_count as u32 + runs[1].sector_count as u32,
+            70_000
+        );
     }
 
     #[test]

@@ -28,6 +28,9 @@
 
 use anyhow::{anyhow, bail, Context, Result};
 use std::path::{Path, PathBuf};
+use usbwin_core::Device;
+
+use super::fat32;
 
 /// Two-entry boot.ini covering both stages of the XP install:
 ///
@@ -150,6 +153,74 @@ pub fn build_bootsect_dat(pbr_sector0: &[u8]) -> Result<Vec<u8>> {
     let mut out = sector0.to_vec();
     out[pos..pos + LDR_PADDED.len()].copy_from_slice(LDR_PADDED);
     Ok(out)
+}
+
+/// Produce a single-sector BOOTSECT.DAT by walking FAT to find `$LDR$`,
+/// coalescing its LBAs into runs, and asking bootrec for a raw-LBA loader.
+///
+/// This is the *correct* BOOTSECT.DAT generator (works against any PBR
+/// variant since it doesn't rely on the PBR embedding the NTLDR filename
+/// in sector 0). The older `build_bootsect_dat(pbr_sector0)` patcher
+/// stays as a fallback for the ms-sys PBR path until this becomes
+/// universal.
+///
+/// Currently **blocked on `bootrec::build_xp_setup_chain_bootsect`** —
+/// see bootrec/docs/XP_SETUP_CHAIN_BOOTSECT_SPEC.md. Once that ships,
+/// uncomment the marked line and delete the `bail!`. Everything else
+/// (FAT walk, run coalesce, file extent → runs) is wired up and tested.
+pub fn build_chain_bootsect_via_lba(
+    partition_device: &mut dyn Device,
+) -> Result<Vec<u8>> {
+    let mut sector0 = vec![0u8; 512];
+    partition_device
+        .read_at(0, &mut sector0)
+        .map_err(|e| anyhow!("read partition sector 0 for BPB: {e}"))?;
+
+    let bpb = fat32::Bpb::parse(&sector0).context("parsing FAT32 BPB")?;
+
+    let extent = fat32::find_file_extent(partition_device, &bpb, b"$LDR$      ")
+        .context("walking FAT for $LDR$")?
+        .ok_or_else(|| {
+            anyhow!(
+                "$LDR$ not found in FAT root after staging — \
+                 was stage_root_boot_files run on this partition?"
+            )
+        })?;
+
+    let runs = fat32::coalesce_lbas_to_runs(&extent.lbas);
+    if runs.is_empty() {
+        bail!("$LDR$ has no LBAs — empty file?");
+    }
+    if runs.len() > 8 {
+        bail!(
+            "$LDR$ is fragmented across {} runs — too many to fit in \
+             a 512-byte bootsector. Reformat the partition or stage \
+             $LDR$ earlier (it should be one of the first files written).",
+            runs.len()
+        );
+    }
+
+    let _sector0_arr: &[u8; 512] = sector0[..512].try_into().unwrap();
+    let _target_segment: u16 = 0x2000;
+
+    // TODO(bootrec): replace this bail with the call below once bootrec
+    // ships build_xp_setup_chain_bootsect. The line will be:
+    //
+    //   bootrec::build_xp_setup_chain_bootsect(
+    //       _sector0_arr, _target_segment, &runs
+    //   ).map(|arr| arr.to_vec())
+    //    .map_err(|e| anyhow!("bootrec::build_xp_setup_chain_bootsect: {e}"))
+    //
+    // For now: callers fall back to build_bootsect_dat (PBR-patch) when
+    // we return this error.
+    bail!(
+        "raw-LBA BOOTSECT.DAT path needs bootrec::build_xp_setup_chain_bootsect \
+         (spec at bootrec/docs/XP_SETUP_CHAIN_BOOTSECT_SPEC.md); $LDR$ is at \
+         {} run(s), first run = LBA {} count {}",
+        runs.len(),
+        runs[0].start_lba,
+        runs[0].sector_count,
+    )
 }
 
 /// Write `\$WIN_NT$.~BT\BOOTSECT.DAT` to the mounted USB. Creates the

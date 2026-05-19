@@ -131,23 +131,44 @@ pub fn run(plan: &WritePlan, info: &DeviceInfo, config: &Config) -> Result<()> {
         }
     }
 
-    // Generate \$WIN_NT$.~BT\BOOTSECT.DAT: read back the on-disk PBR,
-    // replace the 11-byte "NTLDR      " filename with "$LDR$      ", write
-    // as a file. NTLDR loads it as a bootsector entry via boot.ini, which
-    // then chainloads $LDR$ (setupldr.bin) to start text-mode setup.
+    // Generate \$WIN_NT$.~BT\BOOTSECT.DAT. Two strategies, tried in order:
     //
-    // Non-fatal: bootrec's NTLDR multi-sector PBR currently puts the NTLDR
-    // string in stage 2 (sector 2), unreachable from a single-sector
-    // BOOTSECT.DAT load. We skip with a warning rather than aborting so
-    // the user can still test the chain up to the "<Windows root>\\system32
-    // \\hal.dll missing" fallback NTLDR shows when BOOTSECT.DAT is absent.
-    // ms-sys's --fat32nt puts the string at offset 0x170 in sector 0, so
-    // this works for `--boot-record=ms-sys`. The proper fix (a bootrec
-    // primitive that emits a single-sector raw-LBA loader for $LDR$) is
-    // tracked separately.
-    let pbr_bytes = read_pbr_sector0(&partition_raw, &info.model)
-        .context("reading PBR back for BOOTSECT.DAT generation")?;
-    let bootsect_dat = xp_staging::build_bootsect_dat(&pbr_bytes);
+    //  (1) Raw-LBA loader via bootrec primitive (preferred). usbwin walks
+    //      FAT to find $LDR$'s LBAs, asks bootrec to emit a 512-byte loader
+    //      that CHS-reads them and jumps. Works against any PBR variant.
+    //      Blocked on bootrec::build_xp_setup_chain_bootsect — currently
+    //      returns Err so we fall through.
+    //
+    //  (2) Patch a copy of the on-disk PBR: replace the 11-byte NTLDR
+    //      filename with $LDR$. Works for ms-sys's --fat32nt PBR (NTLDR
+    //      string in sector 0). Fails for bootrec's NTLDR multi-sector PBR
+    //      (string in stage 2 / sector 2, unreachable).
+    //
+    // If both fail: log a loud warning and skip the file. NTLDR's boot.ini
+    // menu still renders; selecting the text-mode entry falls through to
+    // the default Windows-load path and shows '<Windows root>\\system32
+    // \\hal.dll missing'. Useful intermediate state for debugging.
+    let bootsect_dat = {
+        let mut dev = RawDevice::open(&partition_raw, OpenMode::ReadOnly, &info.model)
+            .with_context(|| format!("opening {partition_raw} for BOOTSECT.DAT generation"))?;
+        let lba_attempt = xp_staging::build_chain_bootsect_via_lba(&mut dev);
+        drop(dev);
+        match lba_attempt {
+            Ok(bytes) => Ok(bytes),
+            Err(lba_err) => {
+                // Fall back to the PBR-patch path.
+                let pbr_bytes = read_pbr_sector0(&partition_raw, &info.model)
+                    .context("reading PBR back for BOOTSECT.DAT fallback")?;
+                xp_staging::build_bootsect_dat(&pbr_bytes).map_err(|patch_err| {
+                    anyhow!(
+                        "both BOOTSECT.DAT strategies failed:\n  \
+                         raw-LBA path: {lba_err:#}\n  \
+                         PBR-patch path: {patch_err:#}"
+                    )
+                })
+            }
+        }
+    };
 
     // Re-mount to write the file (or to leave it absent), then unmount.
     diskutil::mount_disk(&bsd_path)
