@@ -103,6 +103,18 @@ pub fn run(plan: &WritePlan, info: &DeviceInfo, config: &Config) -> Result<()> {
         .context("staging XP boot files at root")?;
     println!("usbwin: staged NTLDR, NTDETECT.COM, $LDR$, boot.ini at USB root");
 
+    // Byte-patch $LDR$ so setupldr looks in \I386\ instead of
+    // \$WIN_NT$.~BT\ for its source files. Required because BOOTSECT.DAT
+    // chainload puts setupldr into HDD-style boot mode, which defaults
+    // to the $WIN_NT$.~BT lookup path — but our files are in \I386\.
+    let ldr_path = usb_mount.join("$LDR$");
+    let patches = xp_staging::patch_setupldr_for_i386_lookup(&ldr_path)
+        .context("patching $LDR$ for \\I386\\ source lookup")?;
+    println!(
+        "usbwin: patched $LDR$ — replaced {patches} occurrences of \
+         $WIN_NT$.~BT with I386"
+    );
+
     diskutil::unmount_disk(&bsd_path).context("unmount before boot records")?;
 
     // Write the XP-era boot records. Both backends use bootrec's MBR_XP

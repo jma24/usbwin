@@ -227,6 +227,62 @@ pub fn build_chain_bootsect_via_lba(
         .map_err(|e| anyhow!("bootrec::build_xp_setup_chain_bootsect: {e}"))
 }
 
+/// Byte-patch `$LDR$` so setupldr looks for its source files in `\I386\`
+/// instead of `\$WIN_NT$.~BT\`.
+///
+/// When setupldr.bin is loaded via the BOOTSECT.DAT chainload path (as
+/// opposed to a CD-style direct boot), its source-detection logic picks
+/// `\$WIN_NT$.~BT\` as the install-files directory. But our USB has the
+/// I386 tree at `\I386\` (the natural XP-ISO layout) and only stages
+/// `BOOTSECT.DAT` in `\$WIN_NT$.~BT\` — so setupldr fails with the
+/// classic "INF file txtsetup.sif is corrupt or missing, status 18".
+///
+/// Patch: replace every literal `$WIN_NT$.~BT` byte sequence (12 bytes)
+/// with `I386\0\0\0\0\0\0\0\0` (4 bytes of name + 8 nulls). Same length,
+/// so no offset shifts. C string handling stops at the first null, so
+/// setupldr reads the result as `I386`.
+///
+/// Canonical patch from WinSetupFromUSB's `gsar.exe` invocations
+/// (jaclaz / wimb, boot-land 2007-2008). Same outcome via a built-in
+/// byte-replace instead of an external tool.
+pub fn patch_setupldr_for_i386_lookup(ldr_path: &Path) -> Result<usize> {
+    const NEEDLE: &[u8; 12] = b"$WIN_NT$.~BT";
+    const REPLACEMENT: &[u8; 12] = b"I386\0\0\0\0\0\0\0\0";
+
+    let mut bytes =
+        std::fs::read(ldr_path).with_context(|| format!("reading {}", ldr_path.display()))?;
+
+    let mut patches = 0usize;
+    let mut pos = 0;
+    while pos + NEEDLE.len() <= bytes.len() {
+        if let Some(rel) = bytes[pos..]
+            .windows(NEEDLE.len())
+            .position(|w| w == &NEEDLE[..])
+        {
+            let abs = pos + rel;
+            bytes[abs..abs + REPLACEMENT.len()].copy_from_slice(REPLACEMENT);
+            patches += 1;
+            pos = abs + REPLACEMENT.len();
+        } else {
+            break;
+        }
+    }
+
+    if patches == 0 {
+        bail!(
+            "no occurrences of $WIN_NT$.~BT found in {} — wrong file, or \
+             setupldr from an XP variant that uses a different path \
+             literal? Patch is required for setupldr to locate \\I386\\ \
+             when launched via BOOTSECT.DAT.",
+            ldr_path.display()
+        );
+    }
+
+    std::fs::write(ldr_path, &bytes)
+        .with_context(|| format!("writing patched {}", ldr_path.display()))?;
+    Ok(patches)
+}
+
 /// Write `\$WIN_NT$.~BT\BOOTSECT.DAT` to the mounted USB. Creates the
 /// directory if missing.
 pub fn write_bootsect_dat(usb_mount: &Path, bytes: &[u8]) -> Result<()> {
@@ -331,6 +387,45 @@ mod tests {
         assert_eq!(patched.len(), 512);
         assert_eq!(&patched[368..379], LDR_PADDED);
         assert_eq!(&patched[510..512], &[0x55, 0xAA]);
+    }
+
+    #[test]
+    fn patch_setupldr_replaces_all_occurrences() {
+        let tmp = std::env::temp_dir().join("usbwin_xp_staging_patch_test.bin");
+        let _ = std::fs::remove_file(&tmp);
+
+        // Synthesize a fake $LDR$ with the string at two known offsets,
+        // plus surrounding junk that must not change.
+        let mut blob = vec![0xCCu8; 200];
+        blob[10..22].copy_from_slice(b"$WIN_NT$.~BT");
+        blob[100..112].copy_from_slice(b"$WIN_NT$.~BT");
+        std::fs::write(&tmp, &blob).unwrap();
+
+        let n = patch_setupldr_for_i386_lookup(&tmp).unwrap();
+        assert_eq!(n, 2, "should patch both occurrences");
+
+        let patched = std::fs::read(&tmp).unwrap();
+        // First 4 bytes of each patched region are "I386", next 8 are nul.
+        assert_eq!(&patched[10..14], b"I386");
+        assert_eq!(&patched[14..22], &[0u8; 8]);
+        assert_eq!(&patched[100..104], b"I386");
+        assert_eq!(&patched[104..112], &[0u8; 8]);
+        // Surrounding bytes unchanged.
+        assert_eq!(&patched[0..10], &[0xCC; 10]);
+        assert_eq!(&patched[22..100], &[0xCC; 78]);
+        assert_eq!(&patched[112..200], &[0xCC; 88]);
+
+        std::fs::remove_file(&tmp).unwrap();
+    }
+
+    #[test]
+    fn patch_setupldr_errors_if_not_found() {
+        let tmp = std::env::temp_dir().join("usbwin_xp_staging_patch_test2.bin");
+        let _ = std::fs::remove_file(&tmp);
+        std::fs::write(&tmp, vec![0xAA; 100]).unwrap();
+        let err = patch_setupldr_for_i386_lookup(&tmp).unwrap_err();
+        assert!(err.to_string().contains("no occurrences"));
+        std::fs::remove_file(&tmp).unwrap();
     }
 
     #[test]
