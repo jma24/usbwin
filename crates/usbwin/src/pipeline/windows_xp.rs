@@ -160,24 +160,24 @@ pub fn run(plan: &WritePlan, info: &DeviceInfo, config: &Config) -> Result<()> {
     // menu still renders; selecting the text-mode entry falls through to
     // the default Windows-load path and shows '<Windows root>\\system32
     // \\hal.dll missing'. Useful intermediate state for debugging.
-    let bootsect_dat = {
+    let (bootsect_dat, bootsect_source) = {
         let mut dev = RawDevice::open(&partition_raw, OpenMode::ReadOnly, &info.model)
             .with_context(|| format!("opening {partition_raw} for BOOTSECT.DAT generation"))?;
         let lba_attempt = xp_staging::build_chain_bootsect_via_lba(&mut dev);
         drop(dev);
         match lba_attempt {
-            Ok(bytes) => Ok(bytes),
+            Ok(bytes) => (Ok(bytes), "raw-LBA $LDR$ loader (bootrec primitive)"),
             Err(lba_err) => {
-                // Fall back to the PBR-patch path.
                 let pbr_bytes = read_pbr_sector0(&partition_raw, &info.model)
                     .context("reading PBR back for BOOTSECT.DAT fallback")?;
-                xp_staging::build_bootsect_dat(&pbr_bytes).map_err(|patch_err| {
+                let attempt = xp_staging::build_bootsect_dat(&pbr_bytes).map_err(|patch_err| {
                     anyhow!(
                         "both BOOTSECT.DAT strategies failed:\n  \
                          raw-LBA path: {lba_err:#}\n  \
                          PBR-patch path: {patch_err:#}"
                     )
-                })
+                });
+                (attempt, "PBR-patch fallback (NTLDR→$LDR$ replace)")
             }
         }
     };
@@ -193,9 +193,10 @@ pub fn run(plan: &WritePlan, info: &DeviceInfo, config: &Config) -> Result<()> {
             xp_staging::write_bootsect_dat(&usb_mount2, &bytes)
                 .context("writing $WIN_NT$.~BT/BOOTSECT.DAT")?;
             println!(
-                "usbwin: wrote {}/$WIN_NT$.~BT/BOOTSECT.DAT ({} bytes, patched from on-disk PBR)",
+                "usbwin: wrote {}/$WIN_NT$.~BT/BOOTSECT.DAT ({} bytes, {})",
                 usb_mount2.display(),
-                bytes.len()
+                bytes.len(),
+                bootsect_source,
             );
         }
         Err(e) => {
