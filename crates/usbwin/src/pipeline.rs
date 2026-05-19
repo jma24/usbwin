@@ -12,6 +12,7 @@ pub mod windows;
 pub mod windows_xp;
 pub mod windows_xp_sif;
 pub mod windows_xp_unattended;
+pub mod xp_staging;
 
 use anyhow::{anyhow, bail, Context, Result};
 use usbwin_core::{BootMode, Config, ModeRequest, WritePlan};

@@ -31,6 +31,7 @@ use super::boot_records;
 use super::diskutil;
 use super::windows_xp_sif;
 use super::windows_xp_unattended;
+use super::xp_staging;
 
 pub fn run(plan: &WritePlan, info: &DeviceInfo, config: &Config) -> Result<()> {
     let bsd_path = info.path.replace("/dev/r", "/dev/");
@@ -87,10 +88,20 @@ pub fn run(plan: &WritePlan, info: &DeviceInfo, config: &Config) -> Result<()> {
     apply_txtsetup_mods(&usb_mount, config.xp_waiters_dir.as_deref())
         .context("modifying TXTSETUP.SIF on USB")?;
 
-    // Optional: write the unattended answer file.
+    // Optional: write the unattended answer file. Goes at the root for
+    // USB-bootstrapped setup (and also at I386\ for source compatibility).
     if config.xp_unattended {
         write_unattended(&usb_mount, config).context("writing winnt.sif")?;
     }
+
+    // Stage \NTLDR, \NTDETECT.COM, \$LDR$, \boot.ini at the partition root.
+    // Without these, the PBR loads \NTLDR (which isn't there yet — XP ISOs
+    // keep it in \I386\) and boots fail before NTLDR even runs. WinSetupFromUSB
+    // recipe; see pipeline/xp_staging.rs.
+    let i386 = xp_staging::find_i386_dir(&usb_mount)?;
+    xp_staging::stage_root_boot_files(&usb_mount, &i386)
+        .context("staging XP boot files at root")?;
+    println!("usbwin: staged NTLDR, NTDETECT.COM, $LDR$, boot.ini at USB root");
 
     diskutil::unmount_disk(&bsd_path).context("unmount before boot records")?;
 
@@ -119,6 +130,29 @@ pub fn run(plan: &WritePlan, info: &DeviceInfo, config: &Config) -> Result<()> {
                 .context("bootrec FAT32 NTLDR PBR splice")?;
         }
     }
+
+    // Generate \$WIN_NT$.~BT\BOOTSECT.DAT: read back the on-disk PBR,
+    // replace the 11-byte "NTLDR      " filename with "$LDR$      ", write
+    // as a file. NTLDR loads it as a bootsector entry via boot.ini, which
+    // then chainloads $LDR$ (setupldr.bin) to start text-mode setup.
+    let pbr_bytes = read_pbr_sector0(&partition_raw, &info.model)
+        .context("reading PBR back for BOOTSECT.DAT generation")?;
+    let bootsect_dat = xp_staging::build_bootsect_dat(&pbr_bytes)
+        .context("patching PBR copy for BOOTSECT.DAT")?;
+
+    // Re-mount to write the file, then unmount before eject.
+    diskutil::mount_disk(&bsd_path)
+        .context("re-mount to write BOOTSECT.DAT")?;
+    let usb_mount2 = find_mount_for_label(&plan.label).ok_or_else(|| {
+        anyhow!("re-mounted partition didn't reappear in /Volumes")
+    })?;
+    xp_staging::write_bootsect_dat(&usb_mount2, &bootsect_dat)
+        .context("writing $WIN_NT$.~BT/BOOTSECT.DAT")?;
+    println!(
+        "usbwin: wrote {}/$WIN_NT$.~BT/BOOTSECT.DAT ({} bytes, patched from on-disk PBR)",
+        usb_mount2.display(),
+        bootsect_dat.len()
+    );
 
     let _ = diskutil::unmount_disk(&bsd_path);
     diskutil::eject(&bsd_path).context("eject after write")?;
@@ -196,19 +230,31 @@ fn write_unattended(usb_mount: &Path, config: &Config) -> Result<()> {
     };
     let body = windows_xp_unattended::generate(&opts);
 
-    // XP setup looks for winnt.sif at I386\winnt.sif (the canonical
-    // location). Some recipes also place it at the partition root; we put
-    // it in I386/ to match Microsoft's official behavior.
-    let i386_dir = ["I386", "i386"]
-        .iter()
-        .map(|n| usb_mount.join(n))
-        .find(|p| p.is_dir())
-        .ok_or_else(|| anyhow!("no I386/ directory on USB"))?;
-    let dest = i386_dir.join("winnt.sif");
-    std::fs::write(&dest, body)
-        .with_context(|| format!("writing {}", dest.display()))?;
-    println!("usbwin: wrote unattended answer file to {}", dest.display());
+    // For USB-bootstrapped setup, winnt.sif lives at the partition root —
+    // that's where the WinSetupFromUSB recipe puts it (setupldr.bin looks
+    // there first when MsDosInitiated="1"). Also write to I386/ for
+    // belt-and-braces compatibility with stock CD-style setup paths.
+    let root_dest = usb_mount.join("winnt.sif");
+    std::fs::write(&root_dest, &body)
+        .with_context(|| format!("writing {}", root_dest.display()))?;
+    println!("usbwin: wrote {}", root_dest.display());
+
+    let i386 = xp_staging::find_i386_dir(usb_mount)?;
+    let i386_dest = i386.join("winnt.sif");
+    std::fs::write(&i386_dest, body)
+        .with_context(|| format!("writing {}", i386_dest.display()))?;
+    println!("usbwin: wrote {}", i386_dest.display());
     Ok(())
+}
+
+/// Read the first sector (512 bytes) of the partition's PBR via raw I/O.
+/// Used after a PBR write to derive the BOOTSECT.DAT patched copy.
+fn read_pbr_sector0(partition_raw: &str, model: &str) -> Result<Vec<u8>> {
+    let mut dev = RawDevice::open(partition_raw, OpenMode::ReadOnly, model)
+        .with_context(|| format!("opening {partition_raw} for PBR read-back"))?;
+    let mut buf = vec![0u8; 512];
+    dev.read_at(0, &mut buf).map_err(anyhow_from_core)?;
+    Ok(buf)
 }
 
 fn write_mbr_sector(info: &DeviceInfo) -> Result<()> {
@@ -225,13 +271,15 @@ fn write_mbr_sector(info: &DeviceInfo) -> Result<()> {
     Ok(())
 }
 
-/// Splice the single-sector FAT32 NTLDR PBR over the freshly-formatted
-/// partition's sector 0. Preserves the BPB that newfs_msdos wrote.
+/// Splice the multi-sector FAT32 NTLDR PBR over the freshly-formatted
+/// partition's reserved area (sectors 0..2). Same shape as the Win 7
+/// BOOTMGR splice: preserves BPB at sector 0 + FSInfo at sector 1, lays
+/// stage 2 at sector 2.
 fn splice_ntldr_pbr(partition_raw: &str, model: &str, verify: bool) -> Result<()> {
     let mut dev = RawDevice::open(partition_raw, OpenMode::ReadWrite, model)
         .with_context(|| format!("opening {partition_raw} for PBR splice"))?;
 
-    let mut existing = [0u8; 512];
+    let mut existing = vec![0u8; 1024];
     dev.read_at(0, &mut existing).map_err(anyhow_from_core)?;
 
     let spliced = boot_records::splice_pbr_ntldr(&existing)?;
@@ -240,7 +288,7 @@ fn splice_ntldr_pbr(partition_raw: &str, model: &str, verify: bool) -> Result<()
     dev.sync().map_err(anyhow_from_core)?;
 
     if verify {
-        let mut readback = [0u8; 512];
+        let mut readback = vec![0u8; spliced.len()];
         dev.read_at(0, &mut readback).map_err(anyhow_from_core)?;
         if spliced != readback {
             bail!("PBR splice verify mismatch");

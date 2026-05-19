@@ -49,13 +49,18 @@ pub fn splice_pbr_bootmgr(formatter_reserved: &[u8]) -> Result<Vec<u8>> {
     .map_err(|e| anyhow!("bootrec::splice_fat32_pbr_multi: {e}"))
 }
 
-/// XP single-sector FAT32 PBR (NTLDR-loading). Takes the formatter's
-/// sector 0 (512 bytes) and returns 512 bytes with the BPB preserved
-/// and the boot code overwritten with the NTLDR variant.
-pub fn splice_pbr_ntldr(formatter_sector0: &[u8]) -> Result<Vec<u8>> {
-    bootrec::splice_fat32_pbr(formatter_sector0, bootrec::FAT32_PBR_NTLDR_BOOT)
-        .map(|arr| arr.to_vec())
-        .map_err(|e| anyhow!("bootrec::splice_fat32_pbr (NTLDR): {e}"))
+/// XP multi-sector FAT32 PBR (NTLDR-loading). Takes the formatter's
+/// reserved area (1024 bytes = sector 0 + sector 1) and returns 1536
+/// bytes spanning partition LBAs 0..2: BPB preserved at sector 0,
+/// FSInfo preserved at sector 1, CHS-reads stage 2 at sector 2.
+///
+/// Went multi-sector 2026-05-19 to support legacy BIOSes that emulate
+/// USB sticks as USB-FDD and reject INT 13h fn 0x42 with AH=01. CHS
+/// reads (fn 0x02) require a geometry probe + per-LBA conversion that
+/// doesn't fit alongside the FAT walker in a single 512-byte sector.
+pub fn splice_pbr_ntldr(formatter_reserved: &[u8]) -> Result<Vec<u8>> {
+    bootrec::splice_fat32_pbr_multi(formatter_reserved, bootrec::FAT32_PBR_NTLDR_MULTI_BOOT)
+        .map_err(|e| anyhow!("bootrec::splice_fat32_pbr_multi (NTLDR): {e}"))
 }
 
 /// Precondition check: bootrec was built with embedded boot blobs, so the
@@ -228,16 +233,18 @@ mod tests {
     #[test]
     fn pbr_ntldr_matches_golden() {
         let input = synthetic_fat32_reserved();
-        let sector0: [u8; 512] = input[..512].try_into().unwrap();
-        let spliced = splice_pbr_ntldr(&sector0).unwrap();
-        // Single-sector PBR.
-        assert_eq!(spliced.len(), 512, "NTLDR PBR is 1 sector");
-        // Same BPB-vs-OEM split as above.
+        let spliced = splice_pbr_ntldr(&input).unwrap();
+        // Multi-sector PBR spans LBAs 0, 1, 2 → 1536 bytes.
+        assert_eq!(spliced.len(), 1536, "NTLDR PBR is 3 sectors");
+        // BPB *parameters* (bytes 11..90) preserved verbatim; OEM at 3..11
+        // overwritten to MSWIN4.1 by the splice (USB-FDD/HDD detection).
         assert_eq!(&spliced[11..90], &input[11..90], "BPB params preserved");
         assert_eq!(&spliced[3..11], b"MSWIN4.1", "OEM overwritten to MSWIN4.1");
-        // Boot signature intact.
+        // FSInfo at sector 1 preserved verbatim.
+        assert_eq!(&spliced[512..1024], &input[512..1024], "FSInfo preserved");
+        // Boot signature intact at sector 0.
         assert_eq!(&spliced[510..512], &[0x55, 0xAA], "boot signature");
-        compare_or_update("pbr_ntldr.bin", &spliced);
+        compare_or_update("pbr_ntldr_multi.bin", &spliced);
     }
 
     #[test]

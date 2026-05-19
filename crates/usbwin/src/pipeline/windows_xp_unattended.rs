@@ -30,8 +30,14 @@ pub fn generate(opts: &UnattendedOptions) -> String {
         ";".into(),
         "[Data]".into(),
         "    AutoPartition=0".into(),
-        "    MsDosInitiated=\"0\"".into(),
+        // MsDosInitiated="1" tells setup it was bootstrapped from
+        // MS-DOS / a custom loader (which a USB install effectively is —
+        // we chainload setupldr.bin from boot.ini, not a CD). "0" makes
+        // setup expect CD media and fail to find source files mid-install.
+        // Per WinSetupFromUSB-style recipe (jaclaz / wimb).
+        "    MsDosInitiated=\"1\"".into(),
         "    UnattendedInstall=Yes".into(),
+        "    Floppyless=\"1\"".into(),
         "".into(),
         "[Unattended]".into(),
         "    UnattendMode=ReadOnly".into(),
