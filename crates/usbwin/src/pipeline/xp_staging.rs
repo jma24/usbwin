@@ -286,6 +286,43 @@ pub fn patch_setupldr_for_i386_lookup(ldr_path: &Path) -> Result<usize> {
     Ok(patches)
 }
 
+/// Mirror the contents of `\I386\` into `\$WIN_NT$.~BT\` on the mounted
+/// USB. Setupldr launched via BOOTSECT.DAT chain looks for its source
+/// files under `\$WIN_NT$.~BT\` by default; without this, every lookup
+/// (`txtsetup.sif`, `biosinfo.inf`, the kernel, every driver) misses
+/// and setupldr halts with "txtsetup.sif corrupt or missing, status 18".
+///
+/// We attempted to byte-patch `$LDR$`'s `$WIN_NT$.~BT` literal to `I386`
+/// (the WinSetupFromUSB recipe via gsar.exe) but FAT short-name lookup
+/// against the resulting 12-char-with-spaces path component fails on
+/// our partition. Replicating the directory is simpler and works
+/// regardless of padding strategy / walker quirks. Cost: ~580 MB extra
+/// on the stick (XP install ISO doubles its disk footprint). On a 64 GB
+/// stick this is fine.
+///
+/// Implementation: shell out to `ditto` (macOS native recursive copy
+/// with copy_file_range under the hood — much faster than std::fs).
+pub fn replicate_i386_to_bt(usb_mount: &Path) -> Result<()> {
+    let i386 = find_i386_dir(usb_mount)?;
+    let bt = usb_mount.join("$WIN_NT$.~BT");
+    std::fs::create_dir_all(&bt)
+        .with_context(|| format!("creating {}", bt.display()))?;
+
+    let status = std::process::Command::new("ditto")
+        .arg(&i386)
+        .arg(&bt)
+        .status()
+        .with_context(|| format!("invoking ditto {} {}", i386.display(), bt.display()))?;
+    if !status.success() {
+        bail!(
+            "ditto {} {} failed with {status}",
+            i386.display(),
+            bt.display()
+        );
+    }
+    Ok(())
+}
+
 /// Write `\$WIN_NT$.~BT\BOOTSECT.DAT` to the mounted USB. Creates the
 /// directory if missing.
 pub fn write_bootsect_dat(usb_mount: &Path, bytes: &[u8]) -> Result<()> {

@@ -103,17 +103,20 @@ pub fn run(plan: &WritePlan, info: &DeviceInfo, config: &Config) -> Result<()> {
         .context("staging XP boot files at root")?;
     println!("usbwin: staged NTLDR, NTDETECT.COM, $LDR$, boot.ini at USB root");
 
-    // Byte-patch $LDR$ so setupldr looks in \I386\ instead of
-    // \$WIN_NT$.~BT\ for its source files. Required because BOOTSECT.DAT
-    // chainload puts setupldr into HDD-style boot mode, which defaults
-    // to the $WIN_NT$.~BT lookup path — but our files are in \I386\.
-    let ldr_path = usb_mount.join("$LDR$");
-    let patches = xp_staging::patch_setupldr_for_i386_lookup(&ldr_path)
-        .context("patching $LDR$ for \\I386\\ source lookup")?;
-    println!(
-        "usbwin: patched $LDR$ — replaced {patches} occurrences of \
-         $WIN_NT$.~BT with I386"
-    );
+    // Replicate \I386\ contents into \$WIN_NT$.~BT\ so the unpatched
+    // setupldr — which defaults to \$WIN_NT$.~BT\ when launched via
+    // BOOTSECT.DAT chainload — finds its source files. The alternative
+    // (byte-patching $LDR$'s $WIN_NT$.~BT literal to "I386" + padding)
+    // was tried 2026-05-19 with both null and space padding; both
+    // produced status-18 ("txtsetup.sif corrupt or missing") because
+    // FAT short-name lookup against the resulting padded path
+    // component doesn't match our \I386\ directory. The copy approach
+    // sidesteps padding/FAT-walker quirks entirely. Cost: ~580 MB
+    // extra on the USB stick; rounds to nothing on a 64 GB device.
+    println!("usbwin: replicating I386 → $WIN_NT$.~BT (~580 MB, fast via ditto)…");
+    xp_staging::replicate_i386_to_bt(&usb_mount)
+        .context("replicating I386 contents into $WIN_NT$.~BT")?;
+    println!("usbwin: replicated I386 → $WIN_NT$.~BT");
 
     diskutil::unmount_disk(&bsd_path).context("unmount before boot records")?;
 
