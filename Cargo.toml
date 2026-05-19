@@ -5,7 +5,6 @@ members = [
     "crates/usbwin-core",
     "crates/usbwin-iso",
     "crates/usbwin-disk",
-    "crates/usbwin-boot",
 ]
 
 [workspace.package]
@@ -30,7 +29,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 usbwin-core = { path = "crates/usbwin-core" }
 usbwin-iso  = { path = "crates/usbwin-iso" }
 usbwin-disk = { path = "crates/usbwin-disk" }
-usbwin-boot = { path = "crates/usbwin-boot" }
+bootrec     = { path = "../bootrec" }
 
 [profile.release]
 lto = "thin"

@@ -6,12 +6,11 @@ Cargo.lock.bak
 .vscode/
 *.swp
 
-# build artifacts from boot-asm
-/boot-asm/build/
-/boot-asm/*.bin
-/boot-asm/*.lst
-/boot-asm/*.o
-
-# local-only ms-sys blobs (never check these in — see PROVENANCE.md)
+# local-only ms-sys blobs (never check these in)
 /tests/fixtures/mssys/
 .claude/
+
+# local hardware-test artifacts (kept locally, never committed)
+win7_test.img
+/alpine-standard-*.iso
+/scripts/

@@ -100,13 +100,8 @@ pub fn run(plan: &WritePlan, info: &DeviceInfo, _verify: bool) -> Result<()> {
 }
 
 fn write_mbr_sector(info: &DeviceInfo) -> Result<()> {
-    if usbwin_boot::MBR_BOOT.is_empty() {
-        bail!(
-            "MBR boot blob not embedded; rebuild with --features usbwin-boot/embed-boot-asm"
-        );
-    }
     let disk_sectors = info.size_bytes / SECTOR_SIZE;
-    let mbr = usbwin_boot::build_mbr(usbwin_boot::MBR_BOOT, disk_sectors)
+    let mbr = bootrec::mbr_win7(disk_sectors)
         .map_err(|e| anyhow!("building MBR: {e}"))?;
 
     let mut dev = RawDevice::open(&info.path, OpenMode::ReadWrite, &info.model)
@@ -127,11 +122,6 @@ fn write_mbr_sector(info: &DeviceInfo) -> Result<()> {
 // when a clean-room PBR replaces the ms-sys dependency.
 #[allow(dead_code)]
 fn splice_pbr(partition_raw: &str, model: &str, verify: bool) -> Result<()> {
-    if usbwin_boot::FAT32_PBR_BOOT.is_empty() {
-        bail!(
-            "FAT32 PBR boot blob not embedded; rebuild with --features usbwin-boot/embed-boot-asm"
-        );
-    }
     let mut dev = RawDevice::open(partition_raw, OpenMode::ReadWrite, model)
         .with_context(|| format!("opening {partition_raw} for PBR splice"))?;
 
@@ -139,7 +129,7 @@ fn splice_pbr(partition_raw: &str, model: &str, verify: bool) -> Result<()> {
     let mut existing = [0u8; 512];
     dev.read_at(0, &mut existing).map_err(anyhow_from_core)?;
 
-    let spliced = usbwin_boot::splice_fat32_pbr(&existing, usbwin_boot::FAT32_PBR_BOOT)
+    let spliced = bootrec::splice_fat32_pbr(&existing, bootrec::FAT32_PBR_BOOTMGR_BOOT)
         .map_err(|e| anyhow!("splice_fat32_pbr: {e}"))?;
 
     dev.write_at(0, &spliced).map_err(anyhow_from_core)?;

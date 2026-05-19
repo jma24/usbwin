@@ -188,11 +188,8 @@ fn write_unattended(usb_mount: &Path, config: &Config) -> Result<()> {
 }
 
 fn write_mbr_sector(info: &DeviceInfo) -> Result<()> {
-    if usbwin_boot::MBR_BOOT.is_empty() {
-        bail!("MBR boot blob not embedded; rebuild with --features usbwin-boot/embed-boot-asm");
-    }
     let disk_sectors = info.size_bytes / SECTOR_SIZE;
-    let mbr = usbwin_boot::build_mbr(usbwin_boot::MBR_BOOT, disk_sectors)
+    let mbr = bootrec::mbr_xp(disk_sectors)
         .map_err(|e| anyhow!("building MBR: {e}"))?;
     let mut dev = RawDevice::open(&info.path, OpenMode::ReadWrite, &info.model)
         .context("opening whole disk for MBR write")?;

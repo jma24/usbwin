@@ -13,14 +13,15 @@ crates/
 ├── usbwin           binary: CLI parsing, top-level orchestration, user prompts
 ├── usbwin-core      pipeline types, errors, the WritePlan trait, the four modes
 ├── usbwin-iso       ISO9660 inspection + auto-classification
-├── usbwin-disk      Device trait + macOS implementation (DiskArbitration + raw I/O)
-└── usbwin-boot      MBR/GPT layout, FAT32-PBR-with-preserved-BPB splice, embedded
-                     boot blobs assembled from boot-asm/ at build time
+└── usbwin-disk      Device trait + macOS implementation (DiskArbitration + raw I/O)
 
-boot-asm/            hand-written NASM for MBR, FAT32 PBR, NTFS PBR
-docs/                this file, BOOT_RECORDS.md, PROVENANCE.md, HARDWARE_TESTS.md
+docs/                this file, HARDWARE_TESTS.md, FIELD_FINDINGS, etc.
 tests/               integration tests + golden fixtures
 ```
+
+Boot-record assembly (MBR, FAT32-PBR-with-preserved-BPB splice, NTFS PBR) lives
+in the separate [`bootrec`](https://github.com/jma24/bootrec) library, depended
+on as a path dep today and a published crate later.
 
 ## The five durability calls
 
@@ -76,7 +77,7 @@ Both `DryRun` and `Execute` walk the same step sequence; the difference is the `
 9. **Unmount ISO.**
 10. **Unmount USB.**
 11. **Write MBR boot code.** 440 bytes at offset 0 of `/dev/rdiskN`.
-12. **Splice FAT32 PBR.** Read existing sector, splice in our boot code while preserving the BPB (bytes 3..89). See [`BOOT_RECORDS.md`](BOOT_RECORDS.md).
+12. **Splice FAT32 PBR.** Read existing sector, splice in our boot code while preserving the BPB (bytes 3..89). Implemented in [`bootrec`](https://github.com/jma24/bootrec).
 13. **Verify.** Re-read MBR and PBR, byte-compare against the planned bytes.
 14. **Eject.**
 

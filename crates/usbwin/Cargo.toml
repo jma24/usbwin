@@ -16,7 +16,7 @@ path = "src/main.rs"
 usbwin-core.workspace = true
 usbwin-iso.workspace = true
 usbwin-disk.workspace = true
-usbwin-boot.workspace = true
+bootrec.workspace = true
 
 anyhow.workspace = true
 clap.workspace = true
