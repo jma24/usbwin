@@ -1,3 +1,8 @@
+// Wired in once bootrec ships build_xp_setup_chain_bootsect (see
+// bootrec/docs/XP_SETUP_CHAIN_BOOTSECT_SPEC.md). Until then nothing in
+// the release binary calls these items; tests exercise them in full.
+#![allow(dead_code)]
+
 //! Minimal FAT32 reader for finding a file's on-disk extent (LBAs +
 //! cluster chain) without mounting the filesystem.
 //!
