@@ -4,14 +4,16 @@ Manual tests, run before each tagged release. Each test produces a USB stick fro
 
 ## Scenarios
 
-| # | ISO                          | Mode     | Target hardware            | Pass criteria                                  |
-|---|------------------------------|----------|----------------------------|------------------------------------------------|
-| 1 | Win 7 SP1 32-bit             | windows  | Dell E6410 (legacy BIOS)   | Installer reaches "Install now" screen         |
-| 2 | Win 10 22H2                  | windows  | Same machine, BIOS mode    | Installer reaches "Install now" screen         |
-| 3 | Win 10 22H2                  | auto     | UEFI desktop               | Installer reaches "Install now" screen         |
-| 4 | Ubuntu 22.04 (hybrid)        | auto     | Both BIOS and UEFI machine | GRUB boot menu appears, kernel loads           |
-| 5 | FreeBSD 14                   | auto     | Legacy BIOS                | FreeBSD loader prompt appears                  |
-| 6 | Hiren's BootCD PE            | windows  | Legacy BIOS                | Hiren's menu appears                           |
+| # | ISO                          | Mode        | Target hardware            | Pass criteria                                  | Status |
+|---|------------------------------|-------------|----------------------------|------------------------------------------------|--------|
+| 1 | Win 7 SP1 32-bit             | windows     | Dell E6410 (legacy BIOS)   | Installer reaches "Install now" screen         | ✅ verified 2026-05-19 (bootrec backend) |
+| 1b | Win 7 SP1 32-bit            | windows + `--boot-record=ms-sys` | Dell E6410 (legacy BIOS) | Installer reaches "Install now" screen | ✅ verified 2026-05-19 (ms-sys backend) |
+| 2 | Win 10 22H2                  | windows     | Same machine, BIOS mode    | Installer reaches "Install now" screen         | TODO   |
+| 3 | Win 10 22H2                  | auto        | UEFI desktop               | Installer reaches "Install now" screen         | TODO   |
+| 4 | Ubuntu 22.04 (hybrid)        | auto        | Both BIOS and UEFI machine | GRUB boot menu appears, kernel loads           | TODO   |
+| 5 | FreeBSD 14                   | auto        | Legacy BIOS                | FreeBSD loader prompt appears                  | TODO   |
+| 6 | Hiren's BootCD PE            | windows     | Legacy BIOS                | Hiren's menu appears                           | TODO   |
+| 7 | Win XP SP3                   | windows-xp  | Dell E6410 (legacy BIOS)   | Text-mode setup reaches partitioner            | TODO — pipeline implemented |
 
 ## Bisection guide for "doesn't boot"
 

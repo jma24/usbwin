@@ -6,9 +6,11 @@ A native macOS arm64 CLI for writing bootable USB sticks from any ISO — Window
 
 ## Status
 
-Pre-alpha. The repo exists. **MVP target is Windows 7 install USB** (the Win 7 boot chain is shared with Win 8/10/11, so one code path covers all four). Hybrid Linux/BSD mode ships alongside as v0.1. Isolinux Linux, UEFI-only, and a dedicated **Windows XP mode** (Grub4DOS-style chainloader + `txtsetup.sif` handling, separate from the Vista+ path) come later.
+Alpha. **Windows 7 install USB boots on real legacy-BIOS hardware** (Dell E6410, verified 2026-05-19), end-to-end from `.iso` to "Install now" screen. The Win 7 boot chain is shared with Win 8/10/11, so the same code path covers all four. Hybrid Linux/BSD mode is the v0.1 baseline. Windows XP mode (Grub4DOS-style chainloader + `txtsetup.sif` handling) is implemented as a separate `--type=windows-xp` path; isolinux Linux and UEFI-only modes come later.
 
-See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the design. Boot-record assembly lives in the separate [`bootrec`](https://github.com/jma24/bootrec) library — including the most important technical detail (why we splice the FAT32 PBR instead of replacing it, to preserve the BPB).
+The MBR + FAT32 PBR bytes come from the clean-room [`bootrec`](https://github.com/jma24/bootrec) library by default, linked in-process — no external `ms-sys` binary required. The legacy `ms-sys` shell-out is still available as `--boot-record=ms-sys` for byte-equality auditing.
+
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the design and [`docs/V1_BOOTREC_LIBRARY.md`](docs/V1_BOOTREC_LIBRARY.md) for the bootrec spec, including why we splice the FAT32 PBR instead of replacing it (to preserve the BPB the formatter wrote).
 
 ## Why
 
@@ -22,30 +24,33 @@ There is currently no native macOS arm64 binary that writes a bootable Windows i
 ## Install
 
 ```sh
-# Build from source (requires Rust stable + NASM for the bootrec build step)
+# Build from source (requires Rust stable + NASM for bootrec's NASM blobs)
 brew install nasm
 git clone https://github.com/jma24/bootrec ../bootrec   # path dep — see Cargo.toml
 git clone https://github.com/jma24/usbwin
 cd usbwin
-cargo build --release --features bootrec/embed-boot-asm
+cargo build --release
 sudo cp target/release/usbwin /usr/local/bin/
 ```
 
-### Windows-mode dependency
+The `embed-boot-asm` feature on `bootrec` is enabled by usbwin's `Cargo.toml`,
+so a plain `cargo build --release` is enough — no extra flags.
 
-For `--type=windows` (Win 7/8/10/11 install USBs), v0.2 shells out to `ms-sys`
-for the boot-record bytes (the clean-room PBR is bootrec v1.0 work). One-time
-setup:
+### Optional: ms-sys fallback
+
+By default, usbwin uses the in-process `bootrec` library for MBR and FAT32
+PBR bytes. If you want byte-for-byte equivalence with the upstream tool
+(useful for auditing or comparison against a known-good Win 7 USB), pass
+`--boot-record=ms-sys` and install ms-sys once:
 
 ```sh
 git clone https://gitlab.com/cmaiolino/ms-sys.git /tmp/ms-sys
 cd /tmp/ms-sys && make
 sudo cp bin/ms-sys /usr/local/bin/
+# Or without sudo: export USBWIN_MS_SYS=/tmp/ms-sys/bin/ms-sys
 ```
 
-Or without sudo: `export USBWIN_MS_SYS=/tmp/ms-sys/bin/ms-sys` in your shell.
-
-Hybrid mode (Linux/BSD ISOs) needs no ms-sys.
+Hybrid mode (Linux/BSD ISOs) does not touch the boot-record path at all.
 
 Notarized signed binaries via GitHub Releases: TODO.
 
@@ -59,8 +64,9 @@ repo — run them there.
 
 ```sh
 usbwin <iso-path> <device>
-       [--type=auto|windows|linux|hybrid|uefi]
+       [--type=auto|windows|windows-xp|linux|hybrid|uefi]
        [--label=<volume-label>]
+       [--boot-record=bootrec|ms-sys]
        [--dry-run]
        [--force]
        [--verbose]

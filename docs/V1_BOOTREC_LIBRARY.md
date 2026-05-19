@@ -1,5 +1,13 @@
 # V1.0 design: `bootrec` — a clean-room boot-record library
 
+## Status (2026-05-19)
+
+`bootrec` exists at [github.com/jma24/bootrec](https://github.com/jma24/bootrec) and is the **default** boot-record backend in usbwin (path dep, in-process). The Win 7 install-USB path (`bootrec::mbr_win7` + `bootrec::FAT32_PBR_BOOTMGR_MULTI_BOOT` spliced via `bootrec::splice_fat32_pbr_multi`) is hardware-verified on a Dell E6410 — boots end-to-end from `usbwin <iso> <device>` to the Win 7 "Install now" screen. The XP path (`bootrec::FAT32_PBR_NTLDR_BOOT` via `bootrec::splice_fat32_pbr`) is integrated in `pipeline/windows_xp.rs`; hardware verification pending.
+
+The `ms-sys` shell-out is preserved as `--boot-record=ms-sys` for byte-equality auditing. It is no longer required to build or run usbwin.
+
+What's documented below is the original v1.0 design spec — kept as a record of the eval-first methodology, clean-room protocol, and component breakdown. The "Timeline" and "What kicks off v1.0 work" sections at the bottom are historical; v1.0 happened.
+
 ## One-paragraph summary
 
 A standalone MIT-licensed Rust library that produces Microsoft-compatible MBR

@@ -43,10 +43,11 @@ on as a path dep today and a published crate later.
 
 Staging:
 
-- **v0.1** — hybrid mode (raw write for Linux/BSD ISOs). Ships the safety chokepoint, the verify pass, the macOS device layer.
-- **v0.2** — Windows 7+ mode end-to-end. Real NASM boot records, FAT32 PBR splice, file copy from mounted ISO, full Windows install USB pipeline.
-- **v0.3** — Isolinux Linux mode, UEFI-only mode, ISO9660 auto-classifier.
-- **v0.4** — Windows XP mode (Grub4DOS chainloader + txtsetup.sif rewriter).
+- **v0.1** — hybrid mode (raw write for Linux/BSD ISOs). Ships the safety chokepoint, the verify pass, the macOS device layer. *Done.*
+- **v0.2** — Windows 7+ mode end-to-end via `ms-sys` shell-out. Full Windows install USB pipeline. *Done; hardware-verified on Dell E6410.*
+- **v0.3** — Windows XP mode (Grub4DOS-style chainloader, `txtsetup.sif` rewriter, USB-driver injection, optional `winnt.sif`). *Done.*
+- **v1.0** — `bootrec` library replaces the ms-sys shell-out as the default boot-record source. usbwin's Windows 7+ and XP pipelines link bootrec in-process; ms-sys becomes an opt-in `--boot-record=ms-sys` fallback. *Done for Win 7 (hardware-verified 2026-05-19); XP path implemented, hardware verification pending.*
+- **later** — Isolinux Linux mode, UEFI-only mode, ISO9660 auto-classifier.
 
 ## The pipeline
 
@@ -76,8 +77,8 @@ Both `DryRun` and `Execute` walk the same step sequence; the difference is the `
 8. **Copy.** File-by-file from ISO to USB.
 9. **Unmount ISO.**
 10. **Unmount USB.**
-11. **Write MBR boot code.** 440 bytes at offset 0 of `/dev/rdiskN`.
-12. **Splice FAT32 PBR.** Read existing sector, splice in our boot code while preserving the BPB (bytes 3..89). Implemented in [`bootrec`](https://github.com/jma24/bootrec).
+11. **Write MBR boot code.** 440 bytes at offset 0 of `/dev/rdiskN`, sourced from `bootrec::mbr_win7` (default) or `ms-sys --mbr7` (with `--boot-record=ms-sys`).
+12. **Splice FAT32 PBR.** Read the freshly-formatted partition's reserved sectors, splice in `bootrec::FAT32_PBR_BOOTMGR_MULTI_BOOT` (sectors 0, 1, 2) while preserving the BPB the formatter wrote (bytes 3..90 of sector 0) and the FSInfo sector at LBA 1. The ms-sys fallback runs `--fat32pe` against the buffered device `/dev/diskNs1` (sub-sector writes silently fail on `/dev/rdiskN`; see [`FIELD_FINDINGS`](FIELD_FINDINGS_2026_05_18.md) §2).
 13. **Verify.** Re-read MBR and PBR, byte-compare against the planned bytes.
 14. **Eject.**
 
