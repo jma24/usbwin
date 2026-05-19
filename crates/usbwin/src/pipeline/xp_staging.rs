@@ -230,6 +230,14 @@ pub fn build_chain_bootsect_via_lba(
 /// Byte-patch `$LDR$` so setupldr looks for its source files in `\I386\`
 /// instead of `\$WIN_NT$.~BT\`.
 ///
+/// **Currently unused** — superseded by `replicate_i386_to_bt` which
+/// puts files where setupldr already looks (no setupldr modification).
+/// Kept (with tests) because (a) it's a documented approach that may be
+/// useful for other consumers, and (b) it's the lighter-weight option if
+/// we ever solve the FAT-walker-vs-padded-path interaction that made it
+/// not work in our pipeline.
+#[allow(dead_code)]
+///
 /// When setupldr.bin is loaded via the BOOTSECT.DAT chainload path (as
 /// opposed to a CD-style direct boot), its source-detection logic picks
 /// `\$WIN_NT$.~BT\` as the install-files directory. But our USB has the
