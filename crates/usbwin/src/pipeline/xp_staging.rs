@@ -34,23 +34,32 @@ use super::fat32;
 
 /// Two-entry boot.ini covering both stages of the XP install:
 ///
-///   - "1st, text mode setup" loads `BOOTSECT.DAT` (the patched PBR) which
-///     chainloads `$LDR$` → text-mode setup.
+///   - "1st, text mode setup" loads `BOOTSECT.DAT` (raw-LBA $LDR$ loader)
+///     via NTLDR's bootsector-entry mechanism → setupldr starts setup.
 ///   - "2nd, GUI mode setup" boots the installed Windows on the internal
-///     disk (rdisk(1)) after text-mode setup has copied files there and
-///     rebooted. User picks this from the menu post-reboot.
+///     disk (rdisk(1)) after text-mode setup has copied files there.
 ///
-/// `/SOS /NOGUIBOOT` on the text-mode entry surfaces NTLDR's per-driver
-/// load progress on screen — best in-band diagnostic XP offers.
+/// **Syntax matters**: bootsector entries use `C:\path` (drive-letter
+/// prefix), NOT ARC paths. NTLDR silently rejects malformed bootsector
+/// entries and falls through to the next entry — which gave us the
+/// classic "<Windows root>\system32\hal.dll missing" symptom from the
+/// rdisk(1) fallthrough when we had this wrong. OS entries (the 2nd
+/// here) use ARC syntax.
 ///
-/// CRLF line endings; NTLDR is finicky about them.
+/// /SOS /NOGUIBOOT and similar kernel switches do NOT apply to
+/// bootsector entries — those flags are kernel-load options. Omitted.
+///
+/// CRLF line endings; NTLDR is finicky.
+///
+/// Format per WinSetupFromUSB MakeBS.cmd (jaclaz 2007), confirmed
+/// 2026-05-19 by NTLDR successfully chainloading.
 pub const BOOT_INI: &str = concat!(
     "[boot loader]\r\n",
     "timeout=10\r\n",
-    "default=multi(0)disk(0)rdisk(0)partition(1)\\$WIN_NT$.~BT\\BOOTSECT.DAT\r\n",
+    "default=C:\\$WIN_NT$.~BT\\BOOTSECT.DAT\r\n",
     "\r\n",
     "[operating systems]\r\n",
-    "multi(0)disk(0)rdisk(0)partition(1)\\$WIN_NT$.~BT\\BOOTSECT.DAT=\"1st, text mode setup\" /SOS /NOGUIBOOT\r\n",
+    "C:\\$WIN_NT$.~BT\\BOOTSECT.DAT=\"1st, text mode setup\"\r\n",
     "multi(0)disk(0)rdisk(1)partition(1)\\WINDOWS=\"2nd, GUI mode setup\"\r\n",
 );
 
@@ -237,8 +246,18 @@ mod tests {
     fn boot_ini_has_both_entries() {
         assert!(BOOT_INI.contains("1st, text mode setup"));
         assert!(BOOT_INI.contains("2nd, GUI mode setup"));
-        assert!(BOOT_INI.contains("BOOTSECT.DAT"));
-        assert!(BOOT_INI.contains("/SOS"));
+        // Bootsector entry uses drive-letter syntax — NOT ARC path.
+        // NTLDR rejects ARC-pathed bootsector entries silently.
+        assert!(
+            BOOT_INI.contains("C:\\$WIN_NT$.~BT\\BOOTSECT.DAT="),
+            "bootsector entry must use C:\\path syntax"
+        );
+        assert!(
+            !BOOT_INI.contains("multi(0)disk(0)rdisk(0)partition(1)\\$WIN_NT$"),
+            "ARC path for bootsector entry would be rejected by NTLDR"
+        );
+        // Kernel switches don't apply to bootsector entries; should be absent.
+        assert!(!BOOT_INI.contains("/SOS"));
         // CRLF line endings (NTLDR is picky).
         assert!(BOOT_INI.contains("\r\n"));
         assert_eq!(
