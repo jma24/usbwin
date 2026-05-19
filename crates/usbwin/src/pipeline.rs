@@ -7,6 +7,7 @@
 pub mod boot_records;
 pub mod confirm;
 pub mod diskutil;
+pub mod fat32;
 pub mod hybrid;
 pub mod windows;
 pub mod windows_xp;
