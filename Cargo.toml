@@ -12,7 +12,7 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.75"
 license = "MIT"
-repository = "https://github.com/jmappleby/usbwin"
+repository = "https://github.com/jma24/usbwin"
 authors = ["John Appleby <johnmichaelappleby@gmail.com>"]
 
 [workspace.dependencies]

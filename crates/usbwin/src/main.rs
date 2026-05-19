@@ -24,7 +24,7 @@ use usbwin_core::ModeRequest;
     about = "Native arm64 macOS bootable-USB writer.",
     long_about = "Writes a bootable USB stick from any ISO (Windows XP through 11, \
                   hybrid Linux/BSD, isolinux Linux, or UEFI-only) on Apple Silicon \
-                  without Rosetta. See https://github.com/jmappleby/usbwin."
+                  without Rosetta. See https://github.com/jma24/usbwin."
 )]
 struct Cli {
     /// Path to the ISO file.

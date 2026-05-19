@@ -25,7 +25,7 @@ There is currently no native macOS arm64 binary that writes a bootable Windows i
 # Build from source (requires Rust stable + NASM for the bootrec build step)
 brew install nasm
 git clone https://github.com/jma24/bootrec ../bootrec   # path dep — see Cargo.toml
-git clone https://github.com/jmappleby/usbwin
+git clone https://github.com/jma24/usbwin
 cd usbwin
 cargo build --release --features bootrec/embed-boot-asm
 sudo cp target/release/usbwin /usr/local/bin/

@@ -713,8 +713,8 @@ reverse.
 ```ruby
 class Bootrec < Formula
   desc "Clean-room implementation of Microsoft boot records (MBR/PBR)"
-  homepage "https://github.com/jmappleby/bootrec"
-  url "https://github.com/jmappleby/bootrec/archive/v1.0.0.tar.gz"
+  homepage "https://github.com/jma24/bootrec"
+  url "https://github.com/jma24/bootrec/archive/v1.0.0.tar.gz"
   sha256 "..."
   license "MIT"
 
@@ -737,8 +737,8 @@ end
 ```ruby
 class Usbwin < Formula
   desc "Native arm64 macOS bootable-USB writer"
-  homepage "https://github.com/jmappleby/usbwin"
-  url "https://github.com/jmappleby/usbwin/archive/v2.0.0.tar.gz"
+  homepage "https://github.com/jma24/usbwin"
+  url "https://github.com/jma24/usbwin/archive/v2.0.0.tar.gz"
   sha256 "..."
   license "MIT"
 
