@@ -84,15 +84,22 @@ pub fn find_i386_dir(usb_mount: &Path) -> Result<PathBuf> {
     )
 }
 
-/// Copy `\I386\NTLDR`, `\I386\NTDETECT.COM`, `\I386\SETUPLDR.BIN` (as `$LDR$`)
-/// to the partition root, and write `\boot.ini`. The original I386/ tree
-/// stays intact — setup expects to find files in both places.
+/// Copy `\I386\NTLDR`, `\I386\NTDETECT.COM`, `\I386\SETUPLDR.BIN` (as `$LDR$`),
+/// and `\I386\TXTSETUP.SIF` to the partition root, plus write `\boot.ini`.
+/// The original I386/ tree stays intact.
+///
+/// **Why `TXTSETUP.SIF` at root**: most XP-USB-install guides (BartPE,
+/// WinSetupFromUSB-clone tutorials, MSFN forum recipes) place this file
+/// at the root as a primary lookup location. setupldr's source-discovery
+/// logic tries multiple paths and root is one of the early ones — having
+/// the file there gives us the shortest path to a successful lookup.
 pub fn stage_root_boot_files(usb_mount: &Path, i386: &Path) -> Result<()> {
     // (source name in I386/, destination name at root)
     let copies: &[(&str, &str)] = &[
         ("NTLDR", "NTLDR"),
         ("NTDETECT.COM", "NTDETECT.COM"),
         ("SETUPLDR.BIN", "$LDR$"),
+        ("TXTSETUP.SIF", "TXTSETUP.SIF"),
     ];
     for (src_name, dst_name) in copies {
         let src = i386.join(src_name);
