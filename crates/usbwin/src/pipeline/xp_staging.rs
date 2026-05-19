@@ -238,16 +238,19 @@ pub fn build_chain_bootsect_via_lba(
 /// classic "INF file txtsetup.sif is corrupt or missing, status 18".
 ///
 /// Patch: replace every literal `$WIN_NT$.~BT` byte sequence (12 bytes)
-/// with `I386\0\0\0\0\0\0\0\0` (4 bytes of name + 8 nulls). Same length,
-/// so no offset shifts. C string handling stops at the first null, so
-/// setupldr reads the result as `I386`.
+/// with `I386` + 8 trailing spaces (4 bytes name + 8 bytes 0x20). Same
+/// length, no offset shifts.
 ///
-/// Canonical patch from WinSetupFromUSB's `gsar.exe` invocations
-/// (jaclaz / wimb, boot-land 2007-2008). Same outcome via a built-in
-/// byte-replace instead of an external tool.
+/// Why spaces and not nulls: empirically, NULL padding produces paths
+/// like `\I386\0\0...\0\0\txtsetup.sif` when setupldr uses fixed-size
+/// memcpy to build the full path. Spaces are tolerated by FAT short-
+/// name matching (trailing spaces in 8.3 names are trimmed for compare)
+/// and by setupldr's path-construction code. This matches gsar's
+/// default replace behavior, which is what the canonical WinSetupFromUSB
+/// patch (jaclaz/wimb, boot-land 2007-2008) actually emits.
 pub fn patch_setupldr_for_i386_lookup(ldr_path: &Path) -> Result<usize> {
     const NEEDLE: &[u8; 12] = b"$WIN_NT$.~BT";
-    const REPLACEMENT: &[u8; 12] = b"I386\0\0\0\0\0\0\0\0";
+    const REPLACEMENT: &[u8; 12] = b"I386        ";
 
     let mut bytes =
         std::fs::read(ldr_path).with_context(|| format!("reading {}", ldr_path.display()))?;
@@ -405,11 +408,11 @@ mod tests {
         assert_eq!(n, 2, "should patch both occurrences");
 
         let patched = std::fs::read(&tmp).unwrap();
-        // First 4 bytes of each patched region are "I386", next 8 are nul.
+        // First 4 bytes of each patched region are "I386", next 8 are spaces.
         assert_eq!(&patched[10..14], b"I386");
-        assert_eq!(&patched[14..22], &[0u8; 8]);
+        assert_eq!(&patched[14..22], b"        ");
         assert_eq!(&patched[100..104], b"I386");
-        assert_eq!(&patched[104..112], &[0u8; 8]);
+        assert_eq!(&patched[104..112], b"        ");
         // Surrounding bytes unchanged.
         assert_eq!(&patched[0..10], &[0xCC; 10]);
         assert_eq!(&patched[22..100], &[0xCC; 78]);
