@@ -200,27 +200,22 @@ pub fn build_chain_bootsect_via_lba(
         );
     }
 
-    let _sector0_arr: &[u8; 512] = sector0[..512].try_into().unwrap();
-    let _target_segment: u16 = 0x2000;
+    let sector0_arr: &[u8; 512] = sector0[..512]
+        .try_into()
+        .expect("sector0 buffer was sized to 512 above");
+    let target_segment: u16 = 0x2000; // setupldr.bin's canonical load segment
 
-    // TODO(bootrec): replace this bail with the call below once bootrec
-    // ships build_xp_setup_chain_bootsect. The line will be:
-    //
-    //   bootrec::build_xp_setup_chain_bootsect(
-    //       _sector0_arr, _target_segment, &runs
-    //   ).map(|arr| arr.to_vec())
-    //    .map_err(|e| anyhow!("bootrec::build_xp_setup_chain_bootsect: {e}"))
-    //
-    // For now: callers fall back to build_bootsect_dat (PBR-patch) when
-    // we return this error.
-    bail!(
-        "raw-LBA BOOTSECT.DAT path needs bootrec::build_xp_setup_chain_bootsect \
-         (spec at bootrec/docs/XP_SETUP_CHAIN_BOOTSECT_SPEC.md); $LDR$ is at \
-         {} run(s), first run = LBA {} count {}",
-        runs.len(),
-        runs[0].start_lba,
-        runs[0].sector_count,
-    )
+    let bootrec_runs: Vec<bootrec::LbaRun> = runs
+        .iter()
+        .map(|r| bootrec::LbaRun {
+            start_lba: r.start_lba,
+            sector_count: r.sector_count,
+        })
+        .collect();
+
+    bootrec::build_xp_setup_chain_bootsect(sector0_arr, target_segment, &bootrec_runs)
+        .map(|arr| arr.to_vec())
+        .map_err(|e| anyhow!("bootrec::build_xp_setup_chain_bootsect: {e}"))
 }
 
 /// Write `\$WIN_NT$.~BT\BOOTSECT.DAT` to the mounted USB. Creates the
