@@ -258,7 +258,15 @@ fn read_pbr_sector0(partition_raw: &str, model: &str) -> Result<Vec<u8>> {
 }
 
 fn write_mbr_sector(info: &DeviceInfo) -> Result<()> {
-    let mbr = boot_records::build_mbr_xp(info.size_bytes)?;
+    // Use the Win 7 MBR variant even in XP mode. The MBR's job is
+    // OS-agnostic (find active partition, chainload its PBR), and
+    // MBR_WIN7 is the bytes that boot end-to-end on the Dell E6410
+    // reference rig (verified 2026-05-19 for Win 7). MBR_XP's PBR
+    // chainload completes on the same hardware too (we saw bootrec's
+    // PBR diagnostic print '2'), but if any downstream stage depends
+    // on MBR side-effects (segment-register state, DL convention,
+    // disk-signature presence), Win7's MBR is the known-quantity.
+    let mbr = boot_records::build_mbr_win7(info.size_bytes)?;
     let mut dev = RawDevice::open(&info.path, OpenMode::ReadWrite, &info.model)
         .context("opening whole disk for MBR write")?;
     dev.write_at(0, &mbr).map_err(anyhow_from_core)?;
