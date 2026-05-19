@@ -195,21 +195,6 @@ pub fn ms_sys_fat32pe(ms_sys: &Path, partition_buffered_path: &str) -> Result<()
     Ok(())
 }
 
-/// Write the Win 2000/XP/2003 MBR boot code via `ms-sys --mbr /dev/diskN`.
-/// XP analogue of `ms_sys_mbr7`; same sub-sector-write constraint — must
-/// use the buffered device, not `/dev/rdiskN`.
-pub fn ms_sys_mbr(ms_sys: &Path, buffered_disk_path: &str) -> Result<()> {
-    let output = Command::new(ms_sys)
-        .args(["-f", "--mbr"])
-        .arg(buffered_disk_path)
-        .output()
-        .with_context(|| format!("invoking ms-sys --mbr {buffered_disk_path}"))?;
-    if !output.status.success() {
-        bail!("ms-sys --mbr failed: {}", format_ms_sys_failure(&output));
-    }
-    Ok(())
-}
-
 /// Write the NT 5.x (XP/2003) NTLDR-loading FAT32 PBR via
 /// `ms-sys --fat32nt /dev/diskNs1`. Sub-sector writes; use buffered device.
 pub fn ms_sys_fat32nt(ms_sys: &Path, partition_buffered_path: &str) -> Result<()> {

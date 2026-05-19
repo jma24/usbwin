@@ -13,7 +13,8 @@ Manual tests, run before each tagged release. Each test produces a USB stick fro
 | 4 | Ubuntu 22.04 (hybrid)        | auto        | Both BIOS and UEFI machine | GRUB boot menu appears, kernel loads           | TODO   |
 | 5 | FreeBSD 14                   | auto        | Legacy BIOS                | FreeBSD loader prompt appears                  | TODO   |
 | 6 | Hiren's BootCD PE            | windows     | Legacy BIOS                | Hiren's menu appears                           | TODO   |
-| 7 | Win XP SP3                   | windows-xp  | Dell E6410 (legacy BIOS)   | Text-mode setup reaches partitioner            | TODO — pipeline implemented |
+| 7 | Win XP SP3                   | windows-xp + `--boot-record=bootrec` | Dell E6410 (legacy BIOS) | Text-mode setup reaches partitioner | ❌ 2026-05-19 — bootrec NTLDR PBR's first sector read fails (prints '2' diagnostic + halt); tracked in `../bootrec/docs/USBWIN_NTLDR_FINDINGS_2026_05_19.md` |
+| 7b | Win XP SP3                   | windows-xp + `--boot-record=ms-sys` | Dell E6410 (legacy BIOS) | Text-mode setup reaches partitioner | ❌ → retest pending — original failure was ms-sys `--mbr` hardcoding drive 0x80; fixed 2026-05-19 by using bootrec MBR + ms-sys PBR. PBR side untested. |
 
 ## Bisection guide for "doesn't boot"
 

@@ -100,26 +100,27 @@ pub fn run(plan: &WritePlan, info: &DeviceInfo, config: &Config) -> Result<()> {
 
     diskutil::unmount_disk(&bsd_path).context("unmount before boot records")?;
 
-    // Write the XP-era boot records. ms-sys path uses --mbr + --fat32nt
-    // (FIELD_FINDINGS §1; --fat32pe would load bootmgr, not NTLDR, which
-    // is wrong for XP). Bootrec path uses MBR_XP_BOOT (already in sector 0
-    // from write_mbr_sector) and the single-sector FAT32 NTLDR PBR.
+    // Write the XP-era boot records. Both backends use bootrec's MBR_XP
+    // (already in sector 0 from write_mbr_sector); only the PBR backend
+    // varies. ms-sys's `--mbr` is unused: its XP-era boot code at offset
+    // 0x9b-0xa3 loads DL from [bp+0] (= the active flag, 0x80), hardcoding
+    // drive 0x80 instead of preserving the BIOS-supplied DL. On hardware
+    // where the BIOS doesn't enumerate the USB stick as drive 0x80, the
+    // ms-sys XP MBR reads the wrong drive and reports "Missing operating
+    // system" (verified on Dell E6410, 2026-05-19, byte dumps in
+    // /tmp/xp_mssys_*.hex from that session). bootrec's MBR_XP saves DL
+    // before any processing and works on the same hardware. The MBR's
+    // job is OS-agnostic (chainload the active partition's PBR), so
+    // using bootrec's MBR for the ms-sys PBR path is correct.
+    diskutil::unmount_disk_force(&bsd_path)
+        .context("force-unmount before PBR write")?;
     match config.boot_record_impl {
         BootRecordImpl::MsSys => {
             let ms_sys = ms_sys.as_ref().expect("ms-sys resolved above");
-            diskutil::ms_sys_mbr(ms_sys, &bsd_path)
-                .context("ms-sys --mbr (writing Win 2000/XP/2003 MBR boot code)")?;
-            // Disk arbitration auto-mounts the FAT32 partition the
-            // moment --mbr returns. Force-unmount so --fat32nt's open
-            // of /dev/disk6s1 doesn't hit EBUSY.
-            diskutil::unmount_disk_force(&bsd_path)
-                .context("force-unmount between ms-sys --mbr and --fat32nt")?;
             diskutil::ms_sys_fat32nt(ms_sys, &partition_bsd)
                 .context("ms-sys --fat32nt (writing NTLDR-loading FAT32 PBR)")?;
         }
         BootRecordImpl::Bootrec => {
-            diskutil::unmount_disk_force(&bsd_path)
-                .context("force-unmount before bootrec PBR splice")?;
             splice_ntldr_pbr(&partition_raw, &info.model, config.verify)
                 .context("bootrec FAT32 NTLDR PBR splice")?;
         }
