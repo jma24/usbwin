@@ -234,71 +234,31 @@ pub fn build_chain_bootsect_via_lba(
         .map_err(|e| anyhow!("bootrec::build_xp_setup_chain_bootsect: {e}"))
 }
 
-/// Byte-patch `$LDR$` so setupldr looks for its source files in `\I386\`
-/// instead of `\$WIN_NT$.~BT\`.
+/// Move `\I386\` → `\$WIN_NT$.~BT\` via a FAT32 directory-entry rename.
+/// No data copy. Setupldr launched via BOOTSECT.DAT chainload reads its
+/// source files from `\$WIN_NT$.~BT\` by default, so the I386 tree must
+/// live there (txtsetup.sif, biosinfo.inf, kernel, drivers, the
+/// `HIVE*.INF` registry seeds — setupdd reads them all from this
+/// directory; missing files leave the target SYSTEM hive broken and
+/// produce PROCESS1_INITIALIZATION_FAILED 0x6B / 0xC000003A at smss-init).
 ///
-/// **Currently unused** — superseded by `replicate_i386_to_bt` which
-/// puts files where setupldr already looks (no setupldr modification).
-/// Kept (with tests) because (a) it's a documented approach that may be
-/// useful for other consumers, and (b) it's the lighter-weight option if
-/// we ever solve the FAT-walker-vs-padded-path interaction that made it
-/// not work in our pipeline.
-#[allow(dead_code)]
-///
-/// When setupldr.bin is loaded via the BOOTSECT.DAT chainload path (as
-/// opposed to a CD-style direct boot), its source-detection logic picks
-/// `\$WIN_NT$.~BT\` as the install-files directory. But our USB has the
-/// I386 tree at `\I386\` (the natural XP-ISO layout) and only stages
-/// `BOOTSECT.DAT` in `\$WIN_NT$.~BT\` — so setupldr fails with the
-/// classic "INF file txtsetup.sif is corrupt or missing, status 18".
-///
-/// Patch: replace every literal `$WIN_NT$.~BT` byte sequence (12 bytes)
-/// with `I386` + 8 trailing spaces (4 bytes name + 8 bytes 0x20). Same
-/// length, no offset shifts.
-///
-/// Why spaces and not nulls: empirically, NULL padding produces paths
-/// like `\I386\0\0...\0\0\txtsetup.sif` when setupldr uses fixed-size
-/// memcpy to build the full path. Spaces are tolerated by FAT short-
-/// name matching (trailing spaces in 8.3 names are trimmed for compare)
-/// and by setupldr's path-construction code. This matches gsar's
-/// default replace behavior, which is what the canonical WinSetupFromUSB
-/// patch (jaclaz/wimb, boot-land 2007-2008) actually emits.
-pub fn patch_setupldr_for_i386_lookup(ldr_path: &Path) -> Result<usize> {
-    const NEEDLE: &[u8; 12] = b"$WIN_NT$.~BT";
-    const REPLACEMENT: &[u8; 12] = b"I386        ";
-
-    let mut bytes =
-        std::fs::read(ldr_path).with_context(|| format!("reading {}", ldr_path.display()))?;
-
-    let mut patches = 0usize;
-    let mut pos = 0;
-    while pos + NEEDLE.len() <= bytes.len() {
-        if let Some(rel) = bytes[pos..]
-            .windows(NEEDLE.len())
-            .position(|w| w == &NEEDLE[..])
-        {
-            let abs = pos + rel;
-            bytes[abs..abs + REPLACEMENT.len()].copy_from_slice(REPLACEMENT);
-            patches += 1;
-            pos = abs + REPLACEMENT.len();
-        } else {
-            break;
-        }
-    }
-
-    if patches == 0 {
+/// Previously we `ditto`'d `\I386\` → `\$WIN_NT$.~BT\` (~580 MB of
+/// redundant I/O — the ISO copy already put the tree on the partition
+/// at `\I386\`; the FAT directory entry just needs to point at a new
+/// name). Rename is instant.
+pub fn move_i386_to_bt(usb_mount: &Path) -> Result<()> {
+    let i386 = find_i386_dir(usb_mount)?;
+    let bt = usb_mount.join("$WIN_NT$.~BT");
+    if bt.exists() {
         bail!(
-            "no occurrences of $WIN_NT$.~BT found in {} — wrong file, or \
-             setupldr from an XP variant that uses a different path \
-             literal? Patch is required for setupldr to locate \\I386\\ \
-             when launched via BOOTSECT.DAT.",
-            ldr_path.display()
+            "{} already exists — pipeline ordering bug? (expected ~BT to \
+             be absent before move_i386_to_bt)",
+            bt.display()
         );
     }
-
-    std::fs::write(ldr_path, &bytes)
-        .with_context(|| format!("writing patched {}", ldr_path.display()))?;
-    Ok(patches)
+    std::fs::rename(&i386, &bt)
+        .with_context(|| format!("rename {} -> {}", i386.display(), bt.display()))?;
+    Ok(())
 }
 
 /// Verbatim canonical USB_MultiBoot rename scripts. They live inside
@@ -323,9 +283,14 @@ pub fn patch_setupldr_for_i386_lookup(ldr_path: &Path) -> Result<usize> {
 pub const REN_FOLD_CMD: &[u8] = include_bytes!("xp_assets/ren_fold.cmd");
 pub const UNDOREN_CMD: &[u8] = include_bytes!("xp_assets/undoren.cmd");
 
-/// Mirror the contents of `\I386\` into `\$WIN_NT$.~LS\I386\` on the mounted
-/// USB, and place the canonical rename scripts (`ren_fold.cmd`,
+/// Mirror the contents of `\$WIN_NT$.~BT\` into `\$WIN_NT$.~LS\I386\` on
+/// the mounted USB, and place the canonical rename scripts (`ren_fold.cmd`,
 /// `undoren.cmd`) at the new directory's root.
+///
+/// Sources from `~BT` (not `\I386\`) because by this point in the pipeline
+/// `\I386\` has been renamed to `~BT` (see `move_i386_to_bt`). The two
+/// directories are byte-identical — `~BT` is the I386 tree with a
+/// different name. Same content, one fewer redundant copy operation.
 ///
 /// `\$WIN_NT$.~LS\I386\` is what XP GUI-mode setup expects as the install
 /// source after text-mode finishes — the name is hard-coded in `setupdd.sys`
@@ -337,28 +302,30 @@ pub const UNDOREN_CMD: &[u8] = include_bytes!("xp_assets/undoren.cmd");
 /// from the install media to `C:\$WIN_NT$.~LS\I386\` on the target HDD,
 /// so the post-reboot GUI-mode setup reads from local disk regardless of
 /// whether the USB stick is still attached or has shifted drive letters.
-///
-/// Cost: another ~580 MB on the stick on top of the `~BT` replica. Fine on
-/// any modern flash drive; not worth optimising until the byte-patch route
-/// is solved.
-pub fn replicate_i386_to_ls(usb_mount: &Path) -> Result<()> {
-    let i386 = find_i386_dir(usb_mount)?;
+pub fn stage_ls_from_bt(usb_mount: &Path) -> Result<()> {
+    let bt = usb_mount.join("$WIN_NT$.~BT");
+    if !bt.is_dir() {
+        bail!(
+            "expected {} to exist (run move_i386_to_bt first)",
+            bt.display()
+        );
+    }
     let ls = usb_mount.join("$WIN_NT$.~LS");
     let ls_i386 = ls.join("I386");
     std::fs::create_dir_all(&ls_i386)
         .with_context(|| format!("creating {}", ls_i386.display()))?;
 
     let status = std::process::Command::new("ditto")
-        .arg(&i386)
+        .arg(&bt)
         .arg(&ls_i386)
         .status()
         .with_context(|| {
-            format!("invoking ditto {} {}", i386.display(), ls_i386.display())
+            format!("invoking ditto {} {}", bt.display(), ls_i386.display())
         })?;
     if !status.success() {
         bail!(
             "ditto {} {} failed with {status}",
-            i386.display(),
+            bt.display(),
             ls_i386.display()
         );
     }
@@ -373,43 +340,6 @@ pub fn replicate_i386_to_ls(usb_mount: &Path) -> Result<()> {
     std::fs::write(&undoren, UNDOREN_CMD)
         .with_context(|| format!("writing {}", undoren.display()))?;
 
-    Ok(())
-}
-
-/// Mirror the contents of `\I386\` into `\$WIN_NT$.~BT\` on the mounted
-/// USB. Setupldr launched via BOOTSECT.DAT chain looks for its source
-/// files under `\$WIN_NT$.~BT\` by default; without this, every lookup
-/// (`txtsetup.sif`, `biosinfo.inf`, the kernel, every driver) misses
-/// and setupldr halts with "txtsetup.sif corrupt or missing, status 18".
-///
-/// We attempted to byte-patch `$LDR$`'s `$WIN_NT$.~BT` literal to `I386`
-/// (the WinSetupFromUSB recipe via gsar.exe) but FAT short-name lookup
-/// against the resulting 12-char-with-spaces path component fails on
-/// our partition. Replicating the directory is simpler and works
-/// regardless of padding strategy / walker quirks. Cost: ~580 MB extra
-/// on the stick (XP install ISO doubles its disk footprint). On a 64 GB
-/// stick this is fine.
-///
-/// Implementation: shell out to `ditto` (macOS native recursive copy
-/// with copy_file_range under the hood — much faster than std::fs).
-pub fn replicate_i386_to_bt(usb_mount: &Path) -> Result<()> {
-    let i386 = find_i386_dir(usb_mount)?;
-    let bt = usb_mount.join("$WIN_NT$.~BT");
-    std::fs::create_dir_all(&bt)
-        .with_context(|| format!("creating {}", bt.display()))?;
-
-    let status = std::process::Command::new("ditto")
-        .arg(&i386)
-        .arg(&bt)
-        .status()
-        .with_context(|| format!("invoking ditto {} {}", i386.display(), bt.display()))?;
-    if !status.success() {
-        bail!(
-            "ditto {} {} failed with {status}",
-            i386.display(),
-            bt.display()
-        );
-    }
     Ok(())
 }
 
@@ -517,45 +447,6 @@ mod tests {
         assert_eq!(patched.len(), 512);
         assert_eq!(&patched[368..379], LDR_PADDED);
         assert_eq!(&patched[510..512], &[0x55, 0xAA]);
-    }
-
-    #[test]
-    fn patch_setupldr_replaces_all_occurrences() {
-        let tmp = std::env::temp_dir().join("usbwin_xp_staging_patch_test.bin");
-        let _ = std::fs::remove_file(&tmp);
-
-        // Synthesize a fake $LDR$ with the string at two known offsets,
-        // plus surrounding junk that must not change.
-        let mut blob = vec![0xCCu8; 200];
-        blob[10..22].copy_from_slice(b"$WIN_NT$.~BT");
-        blob[100..112].copy_from_slice(b"$WIN_NT$.~BT");
-        std::fs::write(&tmp, &blob).unwrap();
-
-        let n = patch_setupldr_for_i386_lookup(&tmp).unwrap();
-        assert_eq!(n, 2, "should patch both occurrences");
-
-        let patched = std::fs::read(&tmp).unwrap();
-        // First 4 bytes of each patched region are "I386", next 8 are spaces.
-        assert_eq!(&patched[10..14], b"I386");
-        assert_eq!(&patched[14..22], b"        ");
-        assert_eq!(&patched[100..104], b"I386");
-        assert_eq!(&patched[104..112], b"        ");
-        // Surrounding bytes unchanged.
-        assert_eq!(&patched[0..10], &[0xCC; 10]);
-        assert_eq!(&patched[22..100], &[0xCC; 78]);
-        assert_eq!(&patched[112..200], &[0xCC; 88]);
-
-        std::fs::remove_file(&tmp).unwrap();
-    }
-
-    #[test]
-    fn patch_setupldr_errors_if_not_found() {
-        let tmp = std::env::temp_dir().join("usbwin_xp_staging_patch_test2.bin");
-        let _ = std::fs::remove_file(&tmp);
-        std::fs::write(&tmp, vec![0xAA; 100]).unwrap();
-        let err = patch_setupldr_for_i386_lookup(&tmp).unwrap_err();
-        assert!(err.to_string().contains("no occurrences"));
-        std::fs::remove_file(&tmp).unwrap();
     }
 
     #[test]

@@ -84,6 +84,34 @@ pub fn run(plan: &WritePlan, info: &DeviceInfo, config: &Config) -> Result<()> {
     let _ = diskutil::hdiutil_detach(&iso_mount);
     copy_result.context("copying XP ISO contents to USB")?;
 
+    // Trim the ISO-root extras the XP install path never reads (DOCS,
+    // DOTNETFX, VALUEADD, SUPPORT, SETUP.EXE, *.HTM — ~500 MB). The
+    // WIN51* tag files and AUTORUN.INF stay (tiny; some BIOSes use the
+    // tag files to recognise install media). Done early so subsequent
+    // stages aren't slowed by the extra files sitting on the partition.
+    // \I386\ stays for now — apply_txtsetup_mods + stage_root_boot_files
+    // read from it, and it gets renamed to \$WIN_NT$.~BT\ below.
+    let trim_extras: &[&str] = &[
+        "DOCS",
+        "DOTNETFX",
+        "VALUEADD",
+        "SUPPORT",
+        "SETUP.EXE",
+        "README.HTM",
+        "SETUPXP.HTM",
+    ];
+    for name in trim_extras {
+        let path = usb_mount.join(name);
+        if path.is_dir() {
+            std::fs::remove_dir_all(&path)
+                .with_context(|| format!("removing {}", path.display()))?;
+        } else if path.is_file() {
+            std::fs::remove_file(&path)
+                .with_context(|| format!("removing {}", path.display()))?;
+        }
+    }
+    println!("usbwin: trimmed ISO-root extras (DOCS/DOTNETFX/VALUEADD/SUPPORT/etc, ~500 MB)");
+
     // Apply the WinSetupFromUSB txtsetup.sif modification on the copied file.
     apply_txtsetup_mods(&usb_mount, config.xp_waiters_dir.as_deref())
         .context("modifying TXTSETUP.SIF on USB")?;
@@ -103,20 +131,16 @@ pub fn run(plan: &WritePlan, info: &DeviceInfo, config: &Config) -> Result<()> {
         .context("staging XP boot files at root")?;
     println!("usbwin: staged NTLDR, NTDETECT.COM, $LDR$, boot.ini at USB root");
 
-    // Replicate \I386\ contents into \$WIN_NT$.~BT\ so the unpatched
-    // setupldr — which defaults to \$WIN_NT$.~BT\ when launched via
-    // BOOTSECT.DAT chainload — finds its source files. The alternative
-    // (byte-patching $LDR$'s $WIN_NT$.~BT literal to "I386" + padding)
-    // was tried 2026-05-19 with both null and space padding; both
-    // produced status-18 ("txtsetup.sif corrupt or missing") because
-    // FAT short-name lookup against the resulting padded path
-    // component doesn't match our \I386\ directory. The copy approach
-    // sidesteps padding/FAT-walker quirks entirely. Cost: ~580 MB
-    // extra on the USB stick; rounds to nothing on a 64 GB device.
-    println!("usbwin: replicating I386 → $WIN_NT$.~BT (~580 MB, fast via ditto)…");
-    xp_staging::replicate_i386_to_bt(&usb_mount)
-        .context("replicating I386 contents into $WIN_NT$.~BT")?;
-    println!("usbwin: replicated I386 → $WIN_NT$.~BT");
+    // Move \I386\ → \$WIN_NT$.~BT\ via FAT32 directory-entry rename
+    // (instant, no I/O). Setupldr launched via BOOTSECT.DAT chainload
+    // reads from ~BT; renaming is cheaper than the ~580 MB ditto we
+    // used to do. setupdd reads HIVE*.INF and other non-FloppyFiles
+    // entries from this directory too, so we mirror the full I386 set
+    // here (a slim DOSNET-based subset was tried 2026-05-20 and produced
+    // PROCESS1_INITIALIZATION_FAILED 0x6B / 0xC000003A at smss-init).
+    xp_staging::move_i386_to_bt(&usb_mount)
+        .context("renaming I386 → $WIN_NT$.~BT")?;
+    println!("usbwin: renamed \\I386\\ → \\$WIN_NT$.~BT\\ (FAT32 rename, no I/O)");
 
     // Stage `\$WIN_NT$.~LS\I386\` (the GUI-mode setup source) and place
     // the canonical ren_fold.cmd / undoren.cmd rename scripts inside it.
@@ -124,10 +148,11 @@ pub fn run(plan: &WritePlan, info: &DeviceInfo, config: &Config) -> Result<()> {
     // as `C:\$WIN_NT$.~LS\I386\`, which is where GUI-mode setup reads from
     // — sidestepping the "please insert the Windows XP CD" prompt that
     // appears when GUI-mode can't find its source on a removable drive.
-    println!("usbwin: replicating I386 → $WIN_NT$.~LS\\I386 (~580 MB, fast via ditto)…");
-    xp_staging::replicate_i386_to_ls(&usb_mount)
-        .context("replicating I386 contents into $WIN_NT$.~LS")?;
-    println!("usbwin: replicated I386 → $WIN_NT$.~LS\\I386 (with ren_fold.cmd, undoren.cmd)");
+    // Sources from ~BT (= the renamed \I386\) since they're byte-identical.
+    println!("usbwin: replicating $WIN_NT$.~BT → $WIN_NT$.~LS\\I386 (~580 MB, fast via ditto)…");
+    xp_staging::stage_ls_from_bt(&usb_mount)
+        .context("staging $WIN_NT$.~LS\\I386 from ~BT")?;
+    println!("usbwin: staged $WIN_NT$.~LS\\I386 (with ren_fold.cmd, undoren.cmd)");
 
     diskutil::unmount_disk(&bsd_path).context("unmount before boot records")?;
 
