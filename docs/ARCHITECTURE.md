@@ -19,9 +19,35 @@ docs/                this file, HARDWARE_TESTS.md, FIELD_FINDINGS, etc.
 tests/               integration tests + golden fixtures
 ```
 
-Boot-record assembly (MBR, FAT32-PBR-with-preserved-BPB splice, NTFS PBR) lives
-in the separate [`bootrec`](https://github.com/jma24/bootrec) library, depended
-on as a path dep today and a published crate later.
+Boot-record assembly (MBR, FAT32-PBR-with-preserved-BPB splice, NTFS PBR,
+XP-setup raw-LBA $LDR$ chainloader) lives in the separate
+[`mkmsbr`](https://github.com/jma24/mkmsbr) library (renamed from
+`bootrec` 2026-05-19), depended on as a path dep today and a published
+crate later. usbwin's Cargo.toml uses `package = "mkmsbr"` aliasing so
+the rest of the code can keep importing as `bootrec::*` unchanged.
+
+The Windows-mode pipelines have their own submodules under
+`crates/usbwin/src/pipeline/`:
+
+- `boot_records` — pure byte-producing wrappers around mkmsbr
+  (`build_mbr_win7`, `build_mbr_xp`, `splice_pbr_bootmgr`,
+  `splice_pbr_ntldr`). Has golden tests against checked-in `.bin`
+  fixtures so any mkmsbr byte drift trips CI immediately.
+- `fat32` — minimal read-only FAT32 walker that finds a file's LBA
+  list. Used for XP's BOOTSECT.DAT raw-LBA loader (we walk FAT to find
+  `\$LDR$`'s on-disk clusters and hand them to mkmsbr's bootsector
+  builder).
+- `xp_staging` — the XP-specific filesystem dance: stage `\NTLDR`,
+  `\NTDETECT.COM`, `\$LDR$`, `\boot.ini`, `\TXTSETUP.SIF` at the root,
+  generate `\$WIN_NT$.~BT\BOOTSECT.DAT`, replicate `\I386\` into
+  `\$WIN_NT$.~BT\` (text-mode setupldr source) and into
+  `\$WIN_NT$.~LS\I386\` (GUI-mode source, copied to `C:\$WIN_NT$.~LS\`
+  by text-mode setup), and drop the verbatim USB_MultiBoot
+  `ren_fold.cmd` / `undoren.cmd` rename scripts inside the latter.
+  The kludgiest module in the codebase — see
+  [`TECH_DEBT.md`](TECH_DEBT.md) for open issues (item #2 tracks the
+  three-I386-trees cost).
+- `windows_xp_sif`, `windows_xp_unattended` — XP-specific INI editors.
 
 ## The five durability calls
 
