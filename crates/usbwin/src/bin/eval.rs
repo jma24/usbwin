@@ -96,9 +96,12 @@ impl Flavor {
 
     /// Substrings that mean "we hit a fatal — FAIL".
     fn fail_markers(self) -> &'static [&'static str] {
-        // BSOD text is white on blue; tesseract usually reads "STOP:" cleanly.
-        // Bootmgr/NTLDR error strings also count.
+        // Generic BSOD body text — far more reliable than the STOP code,
+        // which OCR sometimes mangles (saw "TRQL_NOT_LESS_OR_EQUAL"
+        // for IRQL_NOT_LESS_OR_EQUAL in a real run).
         &[
+            "a problem has been detected",
+            "has been shut down to prevent damage",
             "stop:",
             "process1_initialization_failed",
             "inaccessible_boot_device",
