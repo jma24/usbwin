@@ -88,11 +88,11 @@ pub fn run(plan: &WritePlan, info: &DeviceInfo, config: &Config) -> Result<()> {
     apply_txtsetup_mods(&usb_mount, config.xp_waiters_dir.as_deref())
         .context("modifying TXTSETUP.SIF on USB")?;
 
-    // Optional: write the unattended answer file. Goes at the root for
-    // USB-bootstrapped setup (and also at I386\ for source compatibility).
-    if config.xp_unattended {
-        write_unattended(&usb_mount, config).context("writing winnt.sif")?;
-    }
+    // Always write winnt.sif — the GUI-mode-CDROM-prompt fix relies on
+    // [SetupParams] UserExecute + [GuiRunOnce] hooks declared there, which
+    // need to be present regardless of whether the user asked for a full
+    // unattended install.
+    write_unattended(&usb_mount, config).context("writing winnt.sif")?;
 
     // Stage \NTLDR, \NTDETECT.COM, \$LDR$, \boot.ini at the partition root.
     // Without these, the PBR loads \NTLDR (which isn't there yet — XP ISOs
@@ -117,6 +117,17 @@ pub fn run(plan: &WritePlan, info: &DeviceInfo, config: &Config) -> Result<()> {
     xp_staging::replicate_i386_to_bt(&usb_mount)
         .context("replicating I386 contents into $WIN_NT$.~BT")?;
     println!("usbwin: replicated I386 → $WIN_NT$.~BT");
+
+    // Stage `\$WIN_NT$.~LS\I386\` (the GUI-mode setup source) and place
+    // the canonical ren_fold.cmd / undoren.cmd rename scripts inside it.
+    // Text-mode setup copies the contents of this folder to the target HDD
+    // as `C:\$WIN_NT$.~LS\I386\`, which is where GUI-mode setup reads from
+    // — sidestepping the "please insert the Windows XP CD" prompt that
+    // appears when GUI-mode can't find its source on a removable drive.
+    println!("usbwin: replicating I386 → $WIN_NT$.~LS\\I386 (~580 MB, fast via ditto)…");
+    xp_staging::replicate_i386_to_ls(&usb_mount)
+        .context("replicating I386 contents into $WIN_NT$.~LS")?;
+    println!("usbwin: replicated I386 → $WIN_NT$.~LS\\I386 (with ren_fold.cmd, undoren.cmd)");
 
     diskutil::unmount_disk(&bsd_path).context("unmount before boot records")?;
 
@@ -262,6 +273,13 @@ fn apply_txtsetup_mods(usb_mount: &Path, waiters_dir: Option<&Path>) -> Result<(
         );
     }
 
+    // Declare the rename scripts in [SourceDisksFiles] so text-mode setup
+    // recognises them as install-media files. Required for the
+    // `UserExecute` / `GuiRunOnce` hooks in winnt.sif to actually find
+    // their target binaries.
+    windows_xp_sif::declare_ren_scripts(&mut sif)
+        .map_err(|e| anyhow!("declare_ren_scripts: {e}"))?;
+
     // Chunk 6: optionally copy WaitBT.sys / Wait4UFD.sys into I386/ and
     // declare them in the SIF. Use BSD-style copy so timestamps don't matter.
     let mut waiters_installed = 0;
@@ -293,12 +311,20 @@ fn apply_txtsetup_mods(usb_mount: &Path, waiters_dir: Option<&Path>) -> Result<(
 }
 
 fn write_unattended(usb_mount: &Path, config: &Config) -> Result<()> {
-    let opts = windows_xp_unattended::UnattendedOptions {
-        product_key: config.xp_product_key.clone(),
-        computer_name: config.xp_computer_name.clone(),
-        full_name: config.xp_full_name.clone(),
+    let body = if config.xp_unattended {
+        let opts = windows_xp_unattended::UnattendedOptions {
+            product_key: config.xp_product_key.clone(),
+            computer_name: config.xp_computer_name.clone(),
+            full_name: config.xp_full_name.clone(),
+        };
+        windows_xp_unattended::generate(&opts)
+    } else {
+        // Minimum winnt.sif: just the rename-script hooks + MsDosInitiated.
+        // GUI-mode prompts still appear (EULA, product key, naming) but the
+        // "please insert the Windows XP CD" prompt does NOT, which is the
+        // whole point.
+        windows_xp_unattended::generate_minimal()
     };
-    let body = windows_xp_unattended::generate(&opts);
 
     // For USB-bootstrapped setup, winnt.sif lives at the partition root —
     // that's where the WinSetupFromUSB recipe puts it (setupldr.bin looks

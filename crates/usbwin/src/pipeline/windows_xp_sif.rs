@@ -216,6 +216,24 @@ pub fn declare_waiter(sif: &mut Sif, key: &str, description: &str) -> Result<(),
     Ok(())
 }
 
+/// Declare `ren_fold.cmd` and `undoren.cmd` in `[SourceDisksFiles]` so
+/// text-mode setup recognises them as install-media files and copies them
+/// out of `\$WIN_NT$.~LS\I386\` to the spot that `[SetupParams] UserExecute`
+/// invokes them from.
+///
+/// The flag string `100,,,,,,_x,2,0,0` matches the canonical WinSetupFromUSB
+/// declaration:
+///   - `100` = source disk 1, subdirectory `\I386\`
+///   - `_x`  = upload flags reserved by setup (verbatim from USB_MultiBoot)
+///   - `2,0,0` = copy to text-mode-target (TempDir), no special handling
+///
+/// Idempotent — calling twice leaves the file with one entry each.
+pub fn declare_ren_scripts(sif: &mut Sif) -> Result<(), String> {
+    sif.ensure_kvp("SourceDisksFiles", "ren_fold.cmd", "100,,,,,,_x,2,0,0")?;
+    sif.ensure_kvp("SourceDisksFiles", "undoren.cmd", "100,,,,,,_x,2,0,0")?;
+    Ok(())
+}
+
 /// Apply the WinSetupFromUSB-style modifications: move 5 USB drivers from
 /// `InputDevicesSupport.Load` to `BootBusExtenders.Load`, and ensure each
 /// has a descriptive entry in `BootBusExtenders` (the non-`.Load` section).
@@ -402,6 +420,34 @@ acpi     = \"ACPI Plug & Play Bus Driver\",files.acpi,acpi\r\n";
             .find_key_in_section("BootBusExtenders", "pci")
             .unwrap();
         assert_eq!(sif.lines[still], original_line);
+    }
+
+    #[test]
+    fn declare_ren_scripts_adds_both() {
+        let mut sif = Sif::parse(
+            "[Version]\r\n\
+             signature=\"$Windows NT$\"\r\n\
+             \r\n\
+             [SourceDisksFiles]\r\n\
+             ntoskrnl.exe = 1,,,,,,3_,2,0,0\r\n",
+        );
+        declare_ren_scripts(&mut sif).unwrap();
+        let idx_ren = sif
+            .find_key_in_section("SourceDisksFiles", "ren_fold.cmd")
+            .expect("ren_fold.cmd added");
+        let idx_undo = sif
+            .find_key_in_section("SourceDisksFiles", "undoren.cmd")
+            .expect("undoren.cmd added");
+        assert!(sif.lines[idx_ren].contains("100,,,,,,_x,2,0,0"));
+        assert!(sif.lines[idx_undo].contains("100,,,,,,_x,2,0,0"));
+        // Idempotent.
+        declare_ren_scripts(&mut sif).unwrap();
+        let count_ren = sif
+            .lines
+            .iter()
+            .filter(|l| line_key_matches(l, "ren_fold.cmd"))
+            .count();
+        assert_eq!(count_ren, 1, "second call duplicated ren_fold.cmd");
     }
 
     #[test]

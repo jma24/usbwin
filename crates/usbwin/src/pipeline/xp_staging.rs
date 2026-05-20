@@ -301,6 +301,81 @@ pub fn patch_setupldr_for_i386_lookup(ldr_path: &Path) -> Result<usize> {
     Ok(patches)
 }
 
+/// Verbatim canonical USB_MultiBoot rename scripts. They live inside
+/// `\$WIN_NT$.~LS\I386\` on the USB and are declared in `TXTSETUP.SIF`'s
+/// `[SourceDisksFiles]` so text-mode setup knows to copy them; `winnt.sif`
+/// then invokes them via `[SetupParams] UserExecute` (at end of text-mode)
+/// and `[GuiRunOnce]` (after GUI-mode finishes).
+///
+/// `ren_fold.cmd` runs *between* text-mode setup and GUI-mode setup. It
+/// renames `\$WIN_NT$.~BT` → `WIN_NT.BT` and `\$WIN_NT$.~LS` → `WIN_NT.LS`
+/// on the USB so that GUI-mode setup's boot-volume sanity checks don't
+/// abort when they see those literal folder names (text-mode setup
+/// considers them indicative of a partially-completed install and would
+/// otherwise prompt to insert the CD or re-run setup).
+///
+/// `undoren.cmd` runs via `[GuiRunOnce]` after first login of the freshly-
+/// installed Windows: it renames the folders back, leaving the USB stick
+/// re-usable for another install.
+///
+/// Source: github.com/ruo91/USB_MultiBoot, `USB_MultiBoot_10/makebt/`.
+/// Authors: ilko_t, wimb, jaclaz, cdob (boot-land / MSFN, 2007-2008).
+pub const REN_FOLD_CMD: &[u8] = include_bytes!("xp_assets/ren_fold.cmd");
+pub const UNDOREN_CMD: &[u8] = include_bytes!("xp_assets/undoren.cmd");
+
+/// Mirror the contents of `\I386\` into `\$WIN_NT$.~LS\I386\` on the mounted
+/// USB, and place the canonical rename scripts (`ren_fold.cmd`,
+/// `undoren.cmd`) at the new directory's root.
+///
+/// `\$WIN_NT$.~LS\I386\` is what XP GUI-mode setup expects as the install
+/// source after text-mode finishes — the name is hard-coded in `setupdd.sys`
+/// and is NOT configurable via `SetupSourcePath` when `MsDosInitiated=1`
+/// (which our boot chain requires). Without this folder, GUI-mode setup
+/// prompts "please insert the Windows XP CD" and the install stalls.
+///
+/// During text-mode setup, XP copies the contents of `\$WIN_NT$.~LS\I386\`
+/// from the install media to `C:\$WIN_NT$.~LS\I386\` on the target HDD,
+/// so the post-reboot GUI-mode setup reads from local disk regardless of
+/// whether the USB stick is still attached or has shifted drive letters.
+///
+/// Cost: another ~580 MB on the stick on top of the `~BT` replica. Fine on
+/// any modern flash drive; not worth optimising until the byte-patch route
+/// is solved.
+pub fn replicate_i386_to_ls(usb_mount: &Path) -> Result<()> {
+    let i386 = find_i386_dir(usb_mount)?;
+    let ls = usb_mount.join("$WIN_NT$.~LS");
+    let ls_i386 = ls.join("I386");
+    std::fs::create_dir_all(&ls_i386)
+        .with_context(|| format!("creating {}", ls_i386.display()))?;
+
+    let status = std::process::Command::new("ditto")
+        .arg(&i386)
+        .arg(&ls_i386)
+        .status()
+        .with_context(|| {
+            format!("invoking ditto {} {}", i386.display(), ls_i386.display())
+        })?;
+    if !status.success() {
+        bail!(
+            "ditto {} {} failed with {status}",
+            i386.display(),
+            ls_i386.display()
+        );
+    }
+
+    // Place the rename scripts inside the replicated I386 folder. XP's
+    // `[SourceDisksFiles]` directive `100,,,,,,_x,2,0,0` looks for them at
+    // exactly this path on the install media.
+    let ren_fold = ls_i386.join("ren_fold.cmd");
+    std::fs::write(&ren_fold, REN_FOLD_CMD)
+        .with_context(|| format!("writing {}", ren_fold.display()))?;
+    let undoren = ls_i386.join("undoren.cmd");
+    std::fs::write(&undoren, UNDOREN_CMD)
+        .with_context(|| format!("writing {}", undoren.display()))?;
+
+    Ok(())
+}
+
 /// Mirror the contents of `\I386\` into `\$WIN_NT$.~BT\` on the mounted
 /// USB. Setupldr launched via BOOTSECT.DAT chain looks for its source
 /// files under `\$WIN_NT$.~BT\` by default; without this, every lookup

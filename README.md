@@ -6,11 +6,19 @@ A native macOS arm64 CLI for writing bootable USB sticks from any ISO — Window
 
 ## Status
 
-Alpha. **Windows 7 install USB boots on real legacy-BIOS hardware** (Dell E6410, verified 2026-05-19), end-to-end from `.iso` to "Install now" screen. The Win 7 boot chain is shared with Win 8/10/11, so the same code path covers all four. Hybrid Linux/BSD mode is the v0.1 baseline. Windows XP mode (Grub4DOS-style chainloader + `txtsetup.sif` handling) is implemented as a separate `--type=windows-xp` path; isolinux Linux and UEFI-only modes come later.
+**Alpha.** Two modes work; one is in active debugging; the rest are deferred.
 
-The MBR + FAT32 PBR bytes come from the clean-room [`bootrec`](https://github.com/jma24/bootrec) library by default, linked in-process — no external `ms-sys` binary required. The legacy `ms-sys` shell-out is still available as `--boot-record=ms-sys` for byte-equality auditing.
+| Mode | State |
+|------|-------|
+| Hybrid (Linux/BSD ISO raw write) | ✅ working since v0.1 |
+| Windows 7+ (BOOTMGR chain) | ✅ hardware-verified on Dell E6410 (2026-05-19) with both `--boot-record=bootrec` (default) and `--boot-record=ms-sys`. Same code path covers Win 8/10/11. |
+| Windows XP | ⚠️ boot chain wired through text-mode setup as of 2026-05-19; **stack of known kludges** documented in [`docs/TECH_DEBT.md`](docs/TECH_DEBT.md), not yet recommended for daily use. |
+| Linux/isolinux | deferred |
+| UEFI-only | deferred |
 
-See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the design and [`docs/V1_BOOTREC_LIBRARY.md`](docs/V1_BOOTREC_LIBRARY.md) for the bootrec spec, including why we splice the FAT32 PBR instead of replacing it (to preserve the BPB the formatter wrote).
+The MBR + FAT32 PBR bytes come from the sibling [`mkmsbr`](https://github.com/jma24/mkmsbr) library (renamed from `bootrec` 2026-05-19) by default, linked in-process — no external `ms-sys` binary required. The legacy `ms-sys` shell-out is still available as `--boot-record=ms-sys` for byte-equality auditing of Win 7 mode. usbwin imports it as `bootrec::*` via a Cargo `package = "mkmsbr"` alias for source-compat.
+
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the design, [`docs/V0.3_WINDOWS_XP.md`](docs/V0.3_WINDOWS_XP.md) for the XP recipe (and how it deviates from "clean"), and [`docs/TECH_DEBT.md`](docs/TECH_DEBT.md) for what we know is wrong but haven't fixed yet.
 
 ## Why
 
@@ -24,9 +32,9 @@ There is currently no native macOS arm64 binary that writes a bootable Windows i
 ## Install
 
 ```sh
-# Build from source (requires Rust stable + NASM for bootrec's NASM blobs)
+# Build from source (requires Rust stable + NASM for mkmsbr's NASM blobs)
 brew install nasm
-git clone https://github.com/jma24/bootrec ../bootrec   # path dep — see Cargo.toml
+git clone https://github.com/jma24/mkmsbr ../mkmsbr   # path dep — see Cargo.toml
 git clone https://github.com/jma24/usbwin
 cd usbwin
 cargo build --release
@@ -78,8 +86,12 @@ Examples:
 ```sh
 sudo usbwin Win7_SP1.iso /dev/disk8
 sudo usbwin ubuntu-22.04.iso /dev/disk8 --type=hybrid
+sudo usbwin winxp_sp3.iso /dev/rdisk6 --type=windows-xp     # XP auto-detect is unreliable
 usbwin --dry-run Win7_SP1.iso /dev/disk8     # no sudo needed; emits bytes to /tmp
 ```
+
+Windows XP installs require `--type=windows-xp` explicitly — the auto-detector
+currently misclassifies XP ISOs.
 
 ## Safety
 
