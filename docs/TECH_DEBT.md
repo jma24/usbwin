@@ -17,59 +17,46 @@ hardware-verified end-to-end on the E6410).
 
 ## XP mode
 
-### 🟥 I386 replicated to $WIN_NT$.~BT (~580 MB duplication)
+### ✅ I386 replicated to $WIN_NT$.~BT (resolved 2026-05-20, commit 8f68b44)
 
-`pipeline::xp_staging::replicate_i386_to_bt` shells out to `ditto` to
-copy the entire I386 tree (~5886 files, ~580 MB) into `$WIN_NT$.~BT/`.
-The canonical WinSetupFromUSB recipe achieves the same outcome by
-*byte-patching* setupldr.bin to look in `\I386\` directly — no
-duplication. We attempted the patch (null padding, then space padding);
-neither worked for our specific PBR + FAT-walker combination, so we
-gave up and copied the directory.
+Was `replicate_i386_to_bt` doing a ~580 MB `ditto`. Now `move_i386_to_bt`
+does a FAT32 directory-entry rename `\I386\` → `\$WIN_NT$.~BT\` —
+instant, no I/O. Setupldr finds the same files at the same path.
+Hardware-verified on Dell E6410 (no BSOD, no status-18).
 
-What needs to happen to fix this properly:
-- Identify why the WinSetupFromUSB byte patch works in their pipeline
-  but not ours. Differences to investigate: the gsar-default padding
-  is actually space-padding (we tried that and got the same status 18,
-  so probably not it); the offset of $WIN_NT$.~BT in their setupldr.bin
-  vs ours; whether their setupldr.bin is from a different XP SP/edition
-  with different path-construction logic.
-- Decide whether to invest in the byte-patch fix or just live with the
-  duplication. 580 MB on a 64 GB stick is ~1%; the time cost is ~5
-  seconds on USB 3. Honestly: probably fine to leave forever and
-  document as a deliberate choice.
+### 🟧 Two full I386 trees on the USB (~BT + ~LS\I386\, ~1.16 GB)
 
-### 🟥 Three full I386 trees on the USB (root + ~BT + ~LS, ~1.7 GB)
+Was three trees (~1.74 GB); 2026-05-20 work brought it to two (rename
++ ISO-root trim). The remaining duplication: `\$WIN_NT$.~BT\` and
+`\$WIN_NT$.~LS\I386\` are byte-identical clones of the I386 tree.
 
-After the GUI-mode CDROM-prompt fix landed, the USB now has the I386
-contents replicated THREE times:
+- `\$WIN_NT$.~BT\` — text-mode setupldr source. **Required as a full
+  mirror** — setupldr-byte-patch attempts (`I386` + 8 spaces, and
+  `$WIN_NT$.~LS`) both BSOD'd at PROCESS1_INITIALIZATION_FAILED
+  0x6B / 0xC000003A because the patch only touches setupldr.bin; the
+  setupdd.sys it loads still reads source paths verbatim and produces
+  a broken SYSTEM hive. A slim-BT variant (only DOSNET.INF
+  `[FloppyFiles.0..3]`) failed for the same reason — setupdd reads
+  HIVE\*.INF and other non-FloppyFiles entries from ~BT at runtime.
+- `\$WIN_NT$.~LS\I386\` — GUI-mode source, copied to
+  `C:\$WIN_NT$.~LS\I386\` on the target HDD by text-mode setup.
 
-- `\I386\` — original ISO layout, ~580 MB
-- `\$WIN_NT$.~BT\` — text-mode setupldr source, ~580 MB (replicated
-  because we couldn't get the `\I386\`-redirect byte patch on setupldr
-  to work; see "kept by design" note below)
-- `\$WIN_NT$.~LS\I386\` — GUI-mode source for text-mode setup to copy
-  to `C:\$WIN_NT$.~LS\I386\` on the target HDD, ~580 MB
-
-Total cost on a 64 GB stick: ~1.7 GB, ~2.7%. Tolerable for now, but the
-right end state is **one** I386 tree on the USB. Canonical
-WinSetupFromUSB recipe has I386 only under `~LS` and byte-patches
-setupldr to look there instead of `~BT`. We deferred the byte patch
-because of FAT-walker / padding issues; revisiting it now that the rest
-of the chain is verified would be a net cleanup.
+Recovering the remaining ~580 MB needs a profile of what setupdd
+actually opens from `~BT` during text-mode (not derivable from
+DOSNET.INF alone). Hardware-trace or kernel-debugger territory.
+Deferred.
 
 Sub-item (the original TXTSETUP.SIF triple-copy): we stage TXTSETUP.SIF
-at root, in I386/, AND in $WIN_NT$.~BT/. Still don't empirically know
-which setupldr reads. ~480 KB × 3 is fine but the smell remains.
+at root, in `\$WIN_NT$.~BT\` (from the rename), AND in
+`\$WIN_NT$.~LS\I386\`. Still don't empirically know which setupldr
+reads. ~480 KB × 3 is fine but the smell remains.
 
 What needs to happen:
-- Investigate the byte-patch route on setupldr again with fresh eyes
-  (the gsar default is space padding; we had this on the second
-  attempt and still got status 18 — root cause was likely the missing
-  ~LS folder, not the patch itself). If patch works, we can stage I386
-  ONCE under ~LS and delete the ~BT replication entirely.
 - Empirically determine which TXTSETUP.SIF copy setupldr actually reads
   (single-file marker trick); delete the other two.
+- For the bigger ~580 MB win: instrument setupdd via debugger or QEMU
+  trace to identify the file set it opens from ~BT, then stage exactly
+  that subset.
 
 ### 🟥 SIF modifier reports `moved 5` but persistence unverified
 
@@ -97,17 +84,10 @@ What needs to happen:
   the worst kind.
 - Once the assertion is in place, find the actual bug.
 
-### 🟧 Dead code: `patch_setupldr_for_i386_lookup` and `build_bootsect_dat`
+### ✅ Dead code: `patch_setupldr_for_i386_lookup` (resolved 2026-05-20, commit 8f68b44)
 
-Both functions are kept in `pipeline::xp_staging` with `#[allow(dead_code)]`
-and "for documentation" comments. Neither is called from the production
-pipeline anymore. They were debugging artifacts.
-
-What needs to happen:
-- Once XP is verified end-to-end and we're confident in the chosen
-  recipe, delete them. Their tests too. The git history is the
-  documentation.
-- If we want them as alternatives behind a flag, gate properly.
+Deleted along with its tests. `build_bootsect_dat` remains in use as
+the PBR-patch fallback for the `--boot-record=ms-sys` path; not dead.
 
 ### 🟧 boot.ini's 2nd entry hardcodes rdisk(1)
 

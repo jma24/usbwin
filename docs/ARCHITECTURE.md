@@ -39,14 +39,13 @@ The Windows-mode pipelines have their own submodules under
   builder).
 - `xp_staging` — the XP-specific filesystem dance: stage `\NTLDR`,
   `\NTDETECT.COM`, `\$LDR$`, `\boot.ini`, `\TXTSETUP.SIF` at the root,
-  generate `\$WIN_NT$.~BT\BOOTSECT.DAT`, replicate `\I386\` into
-  `\$WIN_NT$.~BT\` (text-mode setupldr source) and into
-  `\$WIN_NT$.~LS\I386\` (GUI-mode source, copied to `C:\$WIN_NT$.~LS\`
-  by text-mode setup), and drop the verbatim USB_MultiBoot
-  `ren_fold.cmd` / `undoren.cmd` rename scripts inside the latter.
-  The kludgiest module in the codebase — see
-  [`TECH_DEBT.md`](TECH_DEBT.md) for open issues (item #2 tracks the
-  three-I386-trees cost).
+  generate `\$WIN_NT$.~BT\BOOTSECT.DAT`, rename `\I386\` →
+  `\$WIN_NT$.~BT\` (text-mode setupldr source, no I/O), then ditto
+  `\$WIN_NT$.~BT\` → `\$WIN_NT$.~LS\I386\` (GUI-mode source, copied
+  to `C:\$WIN_NT$.~LS\` by text-mode setup) and drop the verbatim
+  USB_MultiBoot `ren_fold.cmd` / `undoren.cmd` rename scripts inside
+  the latter. See [`TECH_DEBT.md`](TECH_DEBT.md) for the remaining
+  ~580 MB duplication between `~BT` and `~LS\I386\`.
 - `windows_xp_sif`, `windows_xp_unattended` — XP-specific INI editors.
 
 ## The five durability calls
