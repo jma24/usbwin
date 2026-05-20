@@ -131,6 +131,16 @@ pub fn run(plan: &WritePlan, info: &DeviceInfo, config: &Config) -> Result<()> {
         .context("staging XP boot files at root")?;
     println!("usbwin: staged NTLDR, NTDETECT.COM, $LDR$, boot.ini at USB root");
 
+    // Stage \WIPE.DAT — the 3rd boot.ini entry's bootsector. Reads
+    // target = DL XOR 1 from the BIOS, prompts the user, and zeros the
+    // first 1 MiB of that disk to give XP setup a virgin starting point
+    // when the target disk has stale MBR/GPT structures from a previous
+    // OS install. Safe by default: this entry is NOT the boot.ini
+    // default and the bootsector requires an explicit Y keypress.
+    xp_staging::stage_wipe_bootsect(&usb_mount)
+        .context("staging \\WIPE.DAT (disk-wipe bootsector)")?;
+    println!("usbwin: staged \\WIPE.DAT (wipe-bootsect, 512 bytes)");
+
     // Move \I386\ → \$WIN_NT$.~BT\ via FAT32 directory-entry rename
     // (instant, no I/O). Setupldr launched via BOOTSECT.DAT chainload
     // reads from ~BT; renaming is cheaper than the ~580 MB ditto we

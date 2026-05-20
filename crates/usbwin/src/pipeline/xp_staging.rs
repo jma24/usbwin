@@ -32,12 +32,20 @@ use usbwin_core::Device;
 
 use super::fat32;
 
-/// Two-entry boot.ini covering both stages of the XP install:
+/// Three-entry boot.ini covering both stages of the XP install plus a
+/// destructive-wipe option for prepping dirty target disks:
 ///
 ///   - "1st, text mode setup" loads `BOOTSECT.DAT` (raw-LBA $LDR$ loader)
 ///     via NTLDR's bootsector-entry mechanism → setupldr starts setup.
 ///   - "2nd, GUI mode setup" boots the installed Windows on the internal
 ///     disk (rdisk(1)) after text-mode setup has copied files there.
+///   - "3rd, wipe internal HDD" loads `WIPE.DAT` (the mkmsbr-supplied
+///     wipe_bootsect blob) which prompts for confirmation, then zeros
+///     the first 1 MiB of `DL XOR 1` (the non-USB primary disk) to
+///     destroy stale MBR / protective MBR / GPT-primary-header bytes
+///     so XP's text-mode setup repartitions cleanly. Safe by default:
+///     NTLDR's default is still the text-mode entry, the wipe entry
+///     requires both selection AND a Y keypress at the wipe prompt.
 ///
 /// **Syntax matters**: bootsector entries use `C:\path` (drive-letter
 /// prefix), NOT ARC paths. NTLDR silently rejects malformed bootsector
@@ -61,6 +69,7 @@ pub const BOOT_INI: &str = concat!(
     "[operating systems]\r\n",
     "C:\\$WIN_NT$.~BT\\BOOTSECT.DAT=\"1st, text mode setup\"\r\n",
     "multi(0)disk(0)rdisk(1)partition(1)\\WINDOWS=\"2nd, GUI mode setup\"\r\n",
+    "C:\\WIPE.DAT=\"3rd, wipe internal HDD (destructive)\"\r\n",
 );
 
 /// FAT 8.3-padded filename strings the PBR uses as a literal compare target.
@@ -354,23 +363,68 @@ pub fn write_bootsect_dat(usb_mount: &Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// Write the mkmsbr-supplied wipe-bootsector blob to `\WIPE.DAT` at the
+/// partition root. NTLDR's boot.ini third entry chainloads this file
+/// (see [`BOOT_INI`]). The blob is a single 512-byte real-mode bootsector
+/// that:
+///
+///   1. Captures BIOS-supplied DL (= USB drive — never touched).
+///   2. Probes target = `DL XOR 1` with INT 13h fn 0x41; aborts if absent.
+///   3. Reads target's size via INT 13h fn 0x48 and prints
+///      `target=0xNN size=NNNN MiB / USB=0xNN safe`.
+///   4. Requires `Y`/`y` to confirm; anything else cancels.
+///   5. On confirm, zeros LBA 0..2047 (1 MiB) of the target via INT 13h
+///      fn 0x43 then reboots via INT 19h.
+///
+/// Source: `mkmsbr/boot-asm/wipe_bootsect.asm`, exported as
+/// `bootrec::WIPE_BOOTSECT_BOOT`.
+pub fn stage_wipe_bootsect(usb_mount: &Path) -> Result<()> {
+    let bytes = bootrec::WIPE_BOOTSECT_BOOT;
+    if bytes.len() != 512 {
+        bail!(
+            "WIPE_BOOTSECT_BOOT is {} bytes; expected exactly 512 \
+             (rebuild mkmsbr with --features embed-boot-asm)",
+            bytes.len()
+        );
+    }
+    if bytes[510] != 0x55 || bytes[511] != 0xAA {
+        bail!("WIPE_BOOTSECT_BOOT missing 0x55 0xAA boot signature");
+    }
+    let dest = usb_mount.join("WIPE.DAT");
+    std::fs::write(&dest, bytes)
+        .with_context(|| format!("writing {}", dest.display()))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn boot_ini_has_both_entries() {
+    fn boot_ini_has_all_three_entries() {
         assert!(BOOT_INI.contains("1st, text mode setup"));
         assert!(BOOT_INI.contains("2nd, GUI mode setup"));
+        assert!(BOOT_INI.contains("3rd, wipe internal HDD"));
         // Bootsector entry uses drive-letter syntax — NOT ARC path.
         // NTLDR rejects ARC-pathed bootsector entries silently.
         assert!(
             BOOT_INI.contains("C:\\$WIN_NT$.~BT\\BOOTSECT.DAT="),
-            "bootsector entry must use C:\\path syntax"
+            "text-mode bootsector entry must use C:\\path syntax"
+        );
+        assert!(
+            BOOT_INI.contains("C:\\WIPE.DAT="),
+            "wipe bootsector entry must use C:\\path syntax"
         );
         assert!(
             !BOOT_INI.contains("multi(0)disk(0)rdisk(0)partition(1)\\$WIN_NT$"),
             "ARC path for bootsector entry would be rejected by NTLDR"
+        );
+        // Default must be the text-mode entry, NOT the destructive wipe
+        // entry — accidental Enter at the menu must not nuke a disk.
+        assert!(BOOT_INI.contains("default=C:\\$WIN_NT$.~BT\\BOOTSECT.DAT"));
+        assert!(
+            !BOOT_INI.contains("default=C:\\WIPE.DAT"),
+            "wipe entry MUST NOT be the boot.ini default"
         );
         // Kernel switches don't apply to bootsector entries; should be absent.
         assert!(!BOOT_INI.contains("/SOS"));
@@ -381,6 +435,42 @@ mod tests {
             BOOT_INI.matches("\r\n").count(),
             "every LF must be preceded by CR"
         );
+    }
+
+    #[test]
+    fn wipe_bootsect_blob_is_valid() {
+        let bytes = bootrec::WIPE_BOOTSECT_BOOT;
+        assert_eq!(
+            bytes.len(),
+            512,
+            "wipe bootsector must be exactly 512 bytes"
+        );
+        assert_eq!(bytes[510], 0x55, "boot signature byte 0 must be 0x55");
+        assert_eq!(bytes[511], 0xAA, "boot signature byte 1 must be 0xAA");
+        // First instruction should be CLI (0xFA) — the bootsector's first
+        // act is to disable interrupts before setting up segment regs.
+        assert_eq!(bytes[0], 0xFA, "first byte should be CLI (0xFA)");
+        // Source string sanity — the user-visible label confirming
+        // the right blob ended up here.
+        let body = &bytes[..510];
+        assert!(
+            body.windows(11).any(|w| w == b"USBWIN WIPE"),
+            "expected 'USBWIN WIPE' marker string in wipe_bootsect"
+        );
+    }
+
+    #[test]
+    fn stage_wipe_bootsect_writes_512_bytes_at_root() {
+        let tmp = std::env::temp_dir().join("usbwin_stage_wipe_test");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        stage_wipe_bootsect(&tmp).unwrap();
+        let dest = tmp.join("WIPE.DAT");
+        let written = std::fs::read(&dest).unwrap();
+        assert_eq!(written.len(), 512);
+        assert_eq!(written[510], 0x55);
+        assert_eq!(written[511], 0xAA);
+        std::fs::remove_dir_all(&tmp).unwrap();
     }
 
     #[test]
