@@ -234,6 +234,12 @@ pub fn declare_ren_scripts(sif: &mut Sif) -> Result<(), String> {
     Ok(())
 }
 
+/// The 5 USB driver keys the WinSetupFromUSB recipe moves from
+/// `InputDevicesSupport.Load` into `BootBusExtenders.Load`. Exposed so the
+/// post-write verifier can check the same set the modifier touched.
+pub const USB_BOOT_DRIVERS: &[&str] =
+    &["usbehci", "usbohci", "usbuhci", "usbhub", "usbstor"];
+
 /// Apply the WinSetupFromUSB-style modifications: move 5 USB drivers from
 /// `InputDevicesSupport.Load` to `BootBusExtenders.Load`, and ensure each
 /// has a descriptive entry in `BootBusExtenders` (the non-`.Load` section).
@@ -241,11 +247,10 @@ pub fn declare_ren_scripts(sif: &mut Sif) -> Result<(), String> {
 /// Returns the count of driver lines actually moved (may be less than 5
 /// if some weren't present in this flavour of XP).
 pub fn apply_usb_boot_mods(sif: &mut Sif) -> Result<usize, String> {
-    const USB_DRIVERS: &[&str] = &["usbehci", "usbohci", "usbuhci", "usbhub", "usbstor"];
     let moved = sif.move_keys(
         "InputDevicesSupport.Load",
         "BootBusExtenders.Load",
-        USB_DRIVERS,
+        USB_BOOT_DRIVERS,
     )?;
 
     // Add descriptive entries to [BootBusExtenders] for each driver that
@@ -262,6 +267,49 @@ pub fn apply_usb_boot_mods(sif: &mut Sif) -> Result<usize, String> {
         sif.ensure_kvp("BootBusExtenders", key, val)?;
     }
     Ok(moved)
+}
+
+/// Re-parse an on-disk SIF and verify the WinSetupFromUSB mods landed.
+///
+/// `expected_moved` is the count `apply_usb_boot_mods` returned for this
+/// file; the verifier checks that exactly those drivers are present in
+/// `[BootBusExtenders.Load]` and absent from `[InputDevicesSupport.Load]`.
+/// `expected_moved == 0` is rejected by the pipeline before this is called,
+/// so any value here represents a real expectation to verify.
+///
+/// Sources of failure this catches that the in-memory test can't:
+///   - `fs::write` returned Ok but the bytes didn't hit the platter
+///     (FAT32 cache, mount-point shenanigans, wrong path resolution).
+///   - A later pipeline step silently overwrote the file with the
+///     pre-modification contents (e.g. a stale ditto source).
+///   - A future refactor breaks the section-name contract without
+///     anyone noticing because the unit-test fixture still parses.
+pub fn verify_usb_boot_mods_persisted(sif: &Sif, expected_moved: usize) -> Result<(), String> {
+    let mut in_dest: Vec<&str> = Vec::new();
+    let mut still_in_source: Vec<&str> = Vec::new();
+    for drv in USB_BOOT_DRIVERS {
+        if sif.find_key_in_section("BootBusExtenders.Load", drv).is_some() {
+            in_dest.push(drv);
+        }
+        if sif.find_key_in_section("InputDevicesSupport.Load", drv).is_some() {
+            still_in_source.push(drv);
+        }
+    }
+    if in_dest.len() != expected_moved {
+        return Err(format!(
+            "expected {expected_moved} USB drivers in [BootBusExtenders.Load] on disk; \
+             found {} ({:?})",
+            in_dest.len(),
+            in_dest
+        ));
+    }
+    if !still_in_source.is_empty() {
+        return Err(format!(
+            "USB drivers still present in [InputDevicesSupport.Load] on disk: {:?}",
+            still_in_source
+        ));
+    }
+    Ok(())
 }
 
 // ----- internal helpers ----------------------------------------------------
@@ -471,6 +519,49 @@ acpi     = \"ACPI Plug & Play Bus Driver\",files.acpi,acpi\r\n";
         }
     }
 
+    #[test]
+    fn verify_persisted_accepts_well_formed_output() {
+        let mut sif = Sif::parse(SAMPLE);
+        let moved = apply_usb_boot_mods(&mut sif).unwrap();
+        // Round-trip through the renderer like the real pipeline does.
+        let reparsed = Sif::parse(&sif.render());
+        verify_usb_boot_mods_persisted(&reparsed, moved).expect("clean SIF should verify");
+    }
+
+    #[test]
+    fn verify_persisted_detects_unmoved_drivers() {
+        // SAMPLE has 5 drivers in InputDevicesSupport.Load and none in
+        // BootBusExtenders.Load. If apply_usb_boot_mods silently no-op'd
+        // (e.g. wrong section name in a future refactor), the verifier
+        // must catch that — claim moved=5 but the file is unmodified.
+        let sif = Sif::parse(SAMPLE);
+        let err = verify_usb_boot_mods_persisted(&sif, 5).unwrap_err();
+        assert!(err.contains("BootBusExtenders.Load"), "got: {err}");
+    }
+
+    #[test]
+    fn verify_persisted_detects_partial_persistence() {
+        // Simulate a write that landed for some drivers but not others
+        // (e.g. truncated write, FAT32 cache flush partway through). Move
+        // 5 in-memory, then strip one out and re-parse.
+        let mut sif = Sif::parse(SAMPLE);
+        let moved = apply_usb_boot_mods(&mut sif).unwrap();
+        assert_eq!(moved, 5);
+        let mut rendered = sif.render();
+        // Remove the usbstor line from the rendered output to mimic a
+        // partial persistence failure.
+        let usbstor_line = sif
+            .lines
+            .iter()
+            .find(|l| line_key_matches(l, "usbstor"))
+            .unwrap()
+            .clone();
+        rendered = rendered.replace(&format!("{usbstor_line}\r\n"), "");
+        let reparsed = Sif::parse(&rendered);
+        let err = verify_usb_boot_mods_persisted(&reparsed, 5).unwrap_err();
+        assert!(err.contains("found 4"), "got: {err}");
+    }
+
     /// Apply the mods to the real XP SP3 fixture and re-parse, verifying
     /// structural integrity. Slow-ish (22k lines); kept in default test set
     /// because it catches real-world parser bugs that the synthetic SAMPLE
@@ -505,5 +596,8 @@ acpi     = \"ACPI Plug & Play Bus Driver\",files.acpi,acpi\r\n";
                 "after-mod re-parse: {driver} missing from BootBusExtenders.Load"
             );
         }
+        // And the post-write verifier should accept the round-tripped file.
+        verify_usb_boot_mods_persisted(&reparsed, moved)
+            .expect("real XP SP3 fixture should verify after round-trip");
     }
 }

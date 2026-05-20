@@ -113,7 +113,7 @@ pub fn run(plan: &WritePlan, info: &DeviceInfo, config: &Config) -> Result<()> {
     println!("usbwin: trimmed ISO-root extras (DOCS/DOTNETFX/VALUEADD/SUPPORT/etc, ~500 MB)");
 
     // Apply the WinSetupFromUSB txtsetup.sif modification on the copied file.
-    apply_txtsetup_mods(&usb_mount, config.xp_waiters_dir.as_deref())
+    let sif_moved = apply_txtsetup_mods(&usb_mount, config.xp_waiters_dir.as_deref())
         .context("modifying TXTSETUP.SIF on USB")?;
 
     // Always write winnt.sif — the GUI-mode-CDROM-prompt fix relies on
@@ -153,6 +153,12 @@ pub fn run(plan: &WritePlan, info: &DeviceInfo, config: &Config) -> Result<()> {
     xp_staging::stage_ls_from_bt(&usb_mount)
         .context("staging $WIN_NT$.~LS\\I386 from ~BT")?;
     println!("usbwin: staged $WIN_NT$.~LS\\I386 (with ren_fold.cmd, undoren.cmd)");
+
+    // Belt-and-suspenders: re-verify the SIF mod persisted in all three
+    // on-disk copies after the rename + ditto. The immediate post-write
+    // check in apply_txtsetup_mods proves the bytes were correct on disk
+    // before the rename; this proves the rename and ditto preserved them.
+    verify_all_sif_copies(&usb_mount, sif_moved).context("verifying SIF copies after staging")?;
 
     diskutil::unmount_disk(&bsd_path).context("unmount before boot records")?;
 
@@ -271,7 +277,36 @@ pub fn run(plan: &WritePlan, info: &DeviceInfo, config: &Config) -> Result<()> {
     Ok(())
 }
 
-fn apply_txtsetup_mods(usb_mount: &Path, waiters_dir: Option<&Path>) -> Result<()> {
+/// After all the file staging (root copy + I386→~BT rename + ditto to ~LS),
+/// re-read each TXTSETUP.SIF copy on disk and re-run the persistence check.
+/// `expected_moved` is the count the original apply_usb_boot_mods returned,
+/// so a copy that's lost or gained a driver line gets caught.
+fn verify_all_sif_copies(usb_mount: &Path, expected_moved: usize) -> Result<()> {
+    let copies: &[&str] = &[
+        "TXTSETUP.SIF",
+        "$WIN_NT$.~BT/TXTSETUP.SIF",
+        "$WIN_NT$.~LS/I386/TXTSETUP.SIF",
+    ];
+    for rel in copies {
+        let path = usb_mount.join(rel);
+        let bytes = std::fs::read_to_string(&path)
+            .with_context(|| format!("reading {} for verification", path.display()))?;
+        let sif = windows_xp_sif::Sif::parse(&bytes);
+        windows_xp_sif::verify_usb_boot_mods_persisted(&sif, expected_moved).map_err(|e| {
+            anyhow!(
+                "SIF copy at {} failed post-staging verification: {e}",
+                path.display()
+            )
+        })?;
+    }
+    println!(
+        "usbwin: verified TXTSETUP.SIF mods present in all {} on-disk copies",
+        copies.len()
+    );
+    Ok(())
+}
+
+fn apply_txtsetup_mods(usb_mount: &Path, waiters_dir: Option<&Path>) -> Result<usize> {
     // FAT32 is case-insensitive but case-preserving. The ISO often has
     // "I386/TXTSETUP.SIF" (uppercase). Try a couple of common spellings.
     let candidates = [
@@ -326,13 +361,30 @@ fn apply_txtsetup_mods(usb_mount: &Path, waiters_dir: Option<&Path>) -> Result<(
     let modified = sif.render();
     std::fs::write(sif_path, modified)
         .with_context(|| format!("writing modified {}", sif_path.display()))?;
+
+    // Re-read the file we just wrote and assert the move actually persisted.
+    // Belt-and-suspenders against silent FAT32 / mount-point write failures —
+    // the in-memory tests prove the transform is correct but can't prove the
+    // bytes reached the platter under macOS's USB FAT32 stack. If this ever
+    // fires, the 2026-05-19 "moved 5 but grep finds nothing" report from
+    // docs/TECH_DEBT.md was a real bug and we now have hard evidence.
+    let on_disk = std::fs::read_to_string(sif_path)
+        .with_context(|| format!("re-reading {} for persistence check", sif_path.display()))?;
+    let on_disk_sif = windows_xp_sif::Sif::parse(&on_disk);
+    windows_xp_sif::verify_usb_boot_mods_persisted(&on_disk_sif, moved).map_err(|e| {
+        anyhow!(
+            "post-write verification of {} failed: {e}",
+            sif_path.display()
+        )
+    })?;
+
     println!(
-        "usbwin: modified {} (moved {} USB drivers; installed {} waiter drivers)",
+        "usbwin: modified {} (moved {} USB drivers; installed {} waiter drivers; verified on disk)",
         sif_path.display(),
         moved,
         waiters_installed
     );
-    Ok(())
+    Ok(moved)
 }
 
 fn write_unattended(usb_mount: &Path, config: &Config) -> Result<()> {

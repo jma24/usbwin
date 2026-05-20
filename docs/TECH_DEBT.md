@@ -58,31 +58,30 @@ What needs to happen:
   trace to identify the file set it opens from ~BT, then stage exactly
   that subset.
 
-### 🟥 SIF modifier reports `moved 5` but persistence unverified
+### 🟧 SIF modifier persistence — assertion landed, root cause TBD
 
-`pipeline::windows_xp_sif::apply_usb_boot_mods` returns "moved 5 USB
-drivers" but `grep` on the resulting on-disk SIF shows the
-`[BootBusExtenders.Load]` section without the moved entries
-(2026-05-19 diagnostic). Either:
+**Status (2026-05-20):** post-write + post-staging assertions added in
+`pipeline::windows_xp_sif::verify_usb_boot_mods_persisted` and
+`pipeline::windows_xp::verify_all_sif_copies`. The pipeline now re-reads
+each of the three on-disk TXTSETUP.SIF copies and asserts the moved
+drivers are in `[BootBusExtenders.Load]` and absent from
+`[InputDevicesSupport.Load]`. Three new unit tests cover the verifier
+(well-formed accept, unmoved reject, partial-persistence reject) and
+all 41 workspace tests still pass.
 
-- The move modifies the in-memory `Sif` correctly but the write-back
-  doesn't persist (file-permission issue? wrong path?)
-- The move modifies a section that happens to share a prefix and isn't
-  the one we want (e.g. `[BootBusExtenders.Load.x86]` vs `[BootBusExtenders.Load]`)
-- `grep` was looking in the wrong file (less likely — we checked all
-  three copies)
+**Original report (2026-05-19):** `apply_usb_boot_mods` returned "moved
+5 USB drivers" but a `grep` on the resulting on-disk SIF allegedly
+showed `[BootBusExtenders.Load]` without the moved entries. Research
+2026-05-20 (worktree review of the fixture, section names, and pipeline
+ordering) couldn't reproduce: the unit test against the real XP SP3
+fixture confirms the in-memory transform is correct and the disk
+write/copy/ditto chain has no obvious overwrites. Most likely the
+original grep targeted the wrong file or the wrong section.
 
-Until we fix this, the XP install loses USB drivers across the
-post-text-mode reboot and the USB key becomes unreachable (classic 0x7B
-INACCESSIBLE_BOOT_DEVICE). The user worked around with BIOS-level SATA
-mode change instead of fighting it.
-
-What needs to happen:
-- Add an end-of-pipeline assertion: after `apply_usb_boot_mods` writes,
-  re-read the file and verify the moved keys are in the destination
-  section. Fail the pipeline if not — silent persistence failures are
-  the worst kind.
-- Once the assertion is in place, find the actual bug.
+**Next:** if the new assertion ever fires on a real hardware burn, we
+have hard evidence (the error names the file and what's missing). If
+it never fires across the next few installs, the symptom was a
+diagnostic artefact and this item closes.
 
 ### ✅ Dead code: `patch_setupldr_for_i386_lookup` (resolved 2026-05-20, commit 8f68b44)
 
