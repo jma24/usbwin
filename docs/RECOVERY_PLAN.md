@@ -244,7 +244,27 @@ Ordered by signal-per-effort, lowest cost and highest information first.
 - **Cost:** ~1-2 hours.
 - **Safety:** Pure code cleanup.
 
-### → Iteration 6: unattended support for the FiraDisk ISO path
+### → Iteration 6: reliable auto-detection for XP-class media
+
+- **Hypothesis:** `--type=auto` should recognize XP/2000/2003 install media
+  reliably and resolve it to `windows-ntxp`, so users do not need to know the
+  explicit mode name for the common case.
+- **Current symptom:** User report 2026-05-21: explicit
+  `--type=windows-ntxp` works, but auto mode appears not to select the right
+  path.
+- **Actions:**
+  1. Add fixtures or fixture metadata for known XP SP3 VL media.
+  2. Audit `usbwin_iso::classify` for NT5 install-media markers:
+     `I386/TXTSETUP.SIF`, `I386/SETUPLDR.BIN`, `I386/NTDETECT.COM`,
+     `WIN51*` marker files, and absence of NT6 `bootmgr`/`sources/`.
+  3. Add tests proving XP-class media resolves to `BootMode::WindowsNtXp`
+     through `--type=auto`.
+  4. Make dry-run output explicit enough to catch misclassification before
+     writing a USB.
+- **Expected signal:** `usbwin <xp.iso> <device>` and
+  `usbwin --dry-run <xp.iso> <device>` report `mode=windows-ntxp`.
+
+### → Iteration 7: unattended support for the FiraDisk ISO path
 
 - **Hypothesis:** Once the GRUB4DOS+FiraDisk path is green, injecting a
   minimal `I386\WINNT.SIF` into a derived XP ISO can remove the inopportune
@@ -263,7 +283,7 @@ Ordered by signal-per-effort, lowest cost and highest information first.
   `AutoPartition=1` unless the user explicitly asks for destructive full
   automation.
 
-### → Iteration 7: AHCI/SATA/RAID textmode storage support
+### → Iteration 8: AHCI/SATA/RAID textmode storage support
 
 - **Hypothesis:** The `windows-ntxp` path can support XP installs with the
   BIOS SATA controller left in AHCI mode by adding a DPMS-style F6 mass-
@@ -288,7 +308,7 @@ Ordered by signal-per-effort, lowest cost and highest information first.
   noninteractively, and multiple matching storage drivers may require a
   manual selection step.
 
-### → Iteration 8: WinVBlock fallback and low-RAM modes
+### → Iteration 9: WinVBlock fallback and low-RAM modes
 
 - **Hypothesis:** FiraDisk + RAM ISO should remain the default, but a
   WinVBlock fallback and a documented low-RAM mode will improve compatibility
@@ -304,7 +324,7 @@ Ordered by signal-per-effort, lowest cost and highest information first.
 - **Expected signal:** We have a controlled fallback for 0x7B/0xA/late GUI-
   mode failures without reviving the legacy three-tree pipeline.
 
-### → Iteration 9: XP troubleshooting and hardware-workaround menu
+### → Iteration 10: XP troubleshooting and hardware-workaround menu
 
 - **Hypothesis:** Many XP USB failures are diagnosable if the boot menu can
   expose the same data that mature tools expose: detected PCI IDs, selected
@@ -322,7 +342,7 @@ Ordered by signal-per-effort, lowest cost and highest information first.
 - **Expected signal:** Failed field tests produce enough evidence to choose
   the next experiment instead of blindly reburning.
 
-### → Iteration 10: multiboot and ISO-library ergonomics
+### → Iteration 11: multiboot and ISO-library ergonomics
 
 - **Hypothesis:** Once XP is green, usbwin can borrow a limited subset of
   Easy2Boot/WinSetupFromUSB ergonomics without becoming a general multiboot
