@@ -21,10 +21,9 @@ tests/               integration tests + golden fixtures
 
 Boot-record assembly (MBR, FAT32-PBR-with-preserved-BPB splice, NTFS PBR,
 and the historical XP boot records) lives in the separate
-[`mkmsbr`](https://github.com/jma24/mkmsbr) library (renamed from
-`bootrec` 2026-05-19), depended on as a path dep today and a published
-crate later. usbwin's Cargo.toml uses `package = "mkmsbr"` aliasing so
-the rest of the code can keep importing as `bootrec::*` unchanged.
+[`mkmsbr`](https://github.com/jma24/mkmsbr) crate. usbwin's Cargo.toml
+uses `package = "mkmsbr"` aliasing so the boot-record wrapper can keep
+importing it as `bootrec::*` internally.
 
 The Windows-mode pipelines have their own submodules under
 `crates/usbwin/src/pipeline/`:

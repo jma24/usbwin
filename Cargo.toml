@@ -29,9 +29,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 usbwin-core = { path = "crates/usbwin-core" }
 usbwin-iso  = { path = "crates/usbwin-iso" }
 usbwin-disk = { path = "crates/usbwin-disk" }
-# mkmsbr was previously named bootrec; aliased here via `package = "mkmsbr"`
-# so the rest of usbwin can keep using `bootrec::` imports without churn.
-bootrec     = { path = "../mkmsbr", package = "mkmsbr", features = ["embed-boot-asm"] }
+# mkmsbr is imported as `bootrec::` in source to avoid churn in the boot-record
+# wrapper code. Use the published crate so a fresh checkout builds cleanly.
+bootrec     = { version = "1.0.1", package = "mkmsbr", features = ["embed-boot-asm"] }
 
 [profile.release]
 lto = "thin"

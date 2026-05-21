@@ -140,6 +140,8 @@ Done means:
 - Build signed/notarized macOS release binaries.
 - Remove the local sibling `../mkmsbr` requirement from release builds by
   using a published crate, vendored dependency, or pinned git dependency.
+  Implemented with the published `mkmsbr` crate; needs fresh-machine
+  install verification.
 - Update README install instructions for users who are not building from a
   local multi-repo checkout.
 

@@ -23,7 +23,7 @@ textmode storage drivers.
 | Linux/isolinux | deferred; not a v1 goal. |
 | UEFI-only | deferred; not a v1 goal. |
 
-The MBR + FAT32 PBR bytes come from the sibling [`mkmsbr`](https://github.com/jma24/mkmsbr) library (renamed from `bootrec` 2026-05-19) by default, linked in-process — no external `ms-sys` binary required. The legacy `ms-sys` shell-out is still available as `--boot-record=ms-sys` for byte-equality auditing of Win 7 mode. usbwin imports it as `bootrec::*` via a Cargo `package = "mkmsbr"` alias for source-compat.
+The MBR + FAT32 PBR bytes come from the published [`mkmsbr`](https://github.com/jma24/mkmsbr) crate by default, linked in-process — no external `ms-sys` binary required. The legacy `ms-sys` shell-out is still available as `--boot-record=ms-sys` for byte-equality auditing of Win 7 mode. usbwin imports it as `bootrec::*` internally via a Cargo `package = "mkmsbr"` alias.
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the design, [`docs/XP_FIRADISK_PIPELINE.md`](docs/XP_FIRADISK_PIPELINE.md) for the active XP recipe, and [`docs/BACKLOG.md`](docs/BACKLOG.md) for release blockers and follow-up work.
 
@@ -42,17 +42,16 @@ Windows 2000/XP/7 install USB. This is that binary.
 ## Install
 
 ```sh
-# Build from source (requires Rust stable + NASM for mkmsbr's NASM blobs)
-brew install nasm
-git clone https://github.com/jma24/mkmsbr ../mkmsbr   # path dep — see Cargo.toml
+# Build from source (requires Rust stable)
 git clone https://github.com/jma24/usbwin
 cd usbwin
 cargo build --release
 sudo cp target/release/usbwin /usr/local/bin/
 ```
 
-The `embed-boot-asm` feature on `bootrec` is enabled by usbwin's `Cargo.toml`,
-so a plain `cargo build --release` is enough — no extra flags.
+The published `mkmsbr` crate is pulled by Cargo automatically, so a plain
+`cargo build --release` is enough — no sibling checkout or local bootloader
+repo is required.
 
 ### Optional: ms-sys fallback
 
@@ -75,7 +74,7 @@ Notarized signed binaries via GitHub Releases: TODO.
 ## Test prerequisites
 
 The default `cargo test` only needs Rust. Boot-record-level integration tests
-(QEMU smoke, ms-sys byte-equality) live in the [bootrec](https://github.com/jma24/bootrec)
+(QEMU smoke, ms-sys byte-equality) live in the upstream boot-record crate
 repo — run them there.
 
 ## Usage
@@ -120,4 +119,4 @@ Every write is verified by re-reading and byte-comparing unless `--no-verify` is
 
 MIT. See [`LICENSE`](LICENSE).
 
-Boot record source code lives in the separate [`bootrec`](https://github.com/jma24/bootrec) repo, with its own clean-room provenance trail.
+Boot record source code lives in the separate [`mkmsbr`](https://github.com/jma24/mkmsbr) repo, with its own clean-room provenance trail.
