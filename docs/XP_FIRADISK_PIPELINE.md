@@ -1,7 +1,7 @@
 # XP FiraDisk pipeline
 
-Design spec for the proposed `windows-xp-firadisk` path. This is the
-Iteration 1 output from `docs/RECOVERY_PLAN.md`: make the boot chain
+Current XP design for the `windows-ntxp` path. This started as the
+Iteration 1 output from the archived recovery plan: make the boot chain
 concrete before writing code or burning hardware.
 
 ## Goal
@@ -48,28 +48,36 @@ pipeline. Those belong to the legacy path.
 The partition remains FAT32 for BIOS compatibility and to keep the USB
 readable from macOS and DOS-era tooling.
 
-The disk should use GRUB4DOS MBR/PBR boot code:
+The production disk uses chenall GRUB4DOS `grldr.mbr` written to the MBR
+boot track, plus one active FAT32 LBA partition containing `GRLDR` and
+`menu.lst`:
 
 ```text
-MBR -> active FAT32 partition PBR -> /grldr -> /menu.lst
+GRUB4DOS MBR/boot track -> active FAT32 partition -> /GRLDR -> /menu.lst
 ```
 
 Implementation expectation:
 
-- `mkmsbr` should supply the GRUB4DOS-compatible MBR/PBR bytes, or
-  usbwin should shell out to a pinned `bootlace.com` only as a temporary
-  prototype step.
+- usbwin embeds the known-working chenall GRUB4DOS 0.4.6a `grldr.mbr`
+  bytes and patches only the MBR partition table/signature fields.
 - The production usbwin path should not depend on an unversioned system
   GRUB4DOS install.
 - Verify by read-back just like the existing `bootrec` paths.
 
-Open integration question:
+Production note:
 
-- Is GRUB4DOS PBR code sufficient, or should production use GRUB4DOS MBR
-  code plus a normal active FAT32 PBR? The first hand prototype used
-  chenall GRUB4DOS 0.4.6a `grldr.mbr` written to the MBR/boot track, with
-  the active FAT32 partition entry restored into the MBR. That combination
-  successfully reached GRUB4DOS and then XP setup in QEMU.
+- The first hand prototype used chenall GRUB4DOS 0.4.6a `grldr.mbr`
+  written to the MBR/boot track, with the active FAT32 partition entry
+  restored into the MBR. That combination successfully reached GRUB4DOS and
+  then XP setup in QEMU and on the Dell E6410.
+- On the 64 GB SanDisk test stick, the expected MBR entry after burn is:
+
+```text
+80 20 21 00 0c fe ff ff 00 08 00 00 b0 02 74 07
+```
+
+This decodes as active FAT32 LBA, start LBA 2048, and partition length
+125043376 sectors.
 
 Prototype note from 2026-05-20:
 

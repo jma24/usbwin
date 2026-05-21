@@ -11,10 +11,6 @@ pub mod fat32;
 pub mod hybrid;
 pub mod windows;
 pub mod windows_ntxp;
-pub mod windows_xp;
-pub mod windows_xp_sif;
-pub mod windows_xp_unattended;
-pub mod xp_staging;
 
 use anyhow::{anyhow, bail, Context, Result};
 use usbwin_core::{BootMode, Config, ModeRequest, WritePlan};
@@ -68,9 +64,6 @@ pub fn run(config: &Config) -> Result<()> {
         }
         BootMode::WindowsNtXp => windows_ntxp::run(&plan, &info, config)
             .context("Windows NT/XP FiraDisk mode pipeline failed"),
-        BootMode::WindowsXp => {
-            windows_xp::run(&plan, &info, config).context("Windows XP legacy mode pipeline failed")
-        }
         BootMode::IsolinuxLinux => bail!("isolinux Linux mode lands in v0.4"),
         BootMode::UefiOnly => bail!("UEFI-only mode lands in v0.4"),
     }
@@ -87,7 +80,6 @@ fn build_plan(config: &Config) -> Result<WritePlan> {
     let label = config.label.clone().unwrap_or_else(|| match mode {
         BootMode::Windows => "WIN7".into(),
         BootMode::WindowsNtXp => "USBWINXP".into(),
-        BootMode::WindowsXp => "WINXP".into(),
         BootMode::Hybrid | BootMode::IsolinuxLinux | BootMode::UefiOnly => "USBWIN".into(),
     });
     Ok(WritePlan {
@@ -106,17 +98,10 @@ fn resolve_mode(config: &Config) -> Result<BootMode> {
                     "could not auto-classify ISO ({e}); pass --type=windows|windows-ntxp|hybrid|linux|uefi explicitly"
                 )
             })?;
-            Ok(match detected {
-                // XP-class media should use the hardware-green GRUB4DOS +
-                // FiraDisk path by default. The old three-tree path remains
-                // available explicitly as --type=windows-xp-legacy.
-                BootMode::WindowsXp => BootMode::WindowsNtXp,
-                other => other,
-            })
+            Ok(detected)
         }
         ModeRequest::Windows => Ok(BootMode::Windows),
         ModeRequest::WindowsNtXp => Ok(BootMode::WindowsNtXp),
-        ModeRequest::WindowsXp => Ok(BootMode::WindowsXp),
         ModeRequest::Hybrid => Ok(BootMode::Hybrid),
         ModeRequest::IsolinuxLinux => Ok(BootMode::IsolinuxLinux),
         ModeRequest::UefiOnly => Ok(BootMode::UefiOnly),

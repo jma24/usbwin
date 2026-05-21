@@ -203,20 +203,6 @@ pub fn ms_sys_fat32pe(ms_sys: &Path, partition_buffered_path: &str) -> Result<()
     Ok(())
 }
 
-/// Write the NT 5.x (XP/2003) NTLDR-loading FAT32 PBR via
-/// `ms-sys --fat32nt /dev/diskNs1`. Sub-sector writes; use buffered device.
-pub fn ms_sys_fat32nt(ms_sys: &Path, partition_buffered_path: &str) -> Result<()> {
-    let output = Command::new(ms_sys)
-        .args(["-f", "--fat32nt"])
-        .arg(partition_buffered_path)
-        .output()
-        .with_context(|| format!("invoking ms-sys --fat32nt {partition_buffered_path}"))?;
-    if !output.status.success() {
-        bail!("ms-sys --fat32nt failed: {}", format_ms_sys_failure(&output));
-    }
-    Ok(())
-}
-
 fn run_diskutil(args: &[&str]) -> Result<()> {
     let output = Command::new("diskutil")
         .args(args)

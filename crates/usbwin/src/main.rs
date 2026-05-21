@@ -58,36 +58,6 @@ struct Cli {
     #[arg(long)]
     no_verify: bool,
 
-    /// XP mode only: directory containing `WaitBT.sys` and `Wait4UFD.sys`
-    /// kernel drivers. usbwin copies them to the USB's I386/ folder and
-    /// declares them in TXTSETUP.SIF as BootBusExtenders. Recommended on
-    /// hardware that hits `0x7B INACCESSIBLE_BOOT_DEVICE` after text-mode
-    /// setup. See docs/V0.3_WINDOWS_XP.md chunk 6 for where to get them.
-    #[arg(long, value_name = "DIR")]
-    xp_waiters: Option<PathBuf>,
-
-    /// XP mode only: generate a `winnt.sif` answer file on the USB so
-    /// the installer doesn't stop at every prompt. Combines with
-    /// --xp-product-key / --xp-computer-name / --xp-full-name.
-    #[arg(long)]
-    xp_unattended: bool,
-
-    /// XP mode only: product key written into the generated `winnt.sif`.
-    /// Format: XXXXX-XXXXX-XXXXX-XXXXX-XXXXX. If not provided, setup will
-    /// still prompt for it.
-    #[arg(long, value_name = "KEY")]
-    xp_product_key: Option<String>,
-
-    /// XP mode only: computer name in the generated `winnt.sif`. Defaults
-    /// to "*" (XP setup auto-generates one).
-    #[arg(long, value_name = "NAME")]
-    xp_computer_name: Option<String>,
-
-    /// XP mode only: full name / registered owner in the generated
-    /// `winnt.sif`. Defaults to "usbwin user".
-    #[arg(long, value_name = "NAME")]
-    xp_full_name: Option<String>,
-
     /// Backend used to write the MBR boot code and partition boot
     /// record. `bootrec` (default) links the native Rust library
     /// in-process; `ms-sys` shells out to the upstream binary at
@@ -118,8 +88,6 @@ enum ModeArg {
     Windows,
     #[value(name = "windows-ntxp", alias = "windows-xp")]
     WindowsNtXp,
-    #[value(name = "windows-xp-legacy")]
-    WindowsXpLegacy,
     Linux,
     Hybrid,
     Uefi,
@@ -131,7 +99,6 @@ impl From<ModeArg> for ModeRequest {
             ModeArg::Auto => ModeRequest::Auto,
             ModeArg::Windows => ModeRequest::Windows,
             ModeArg::WindowsNtXp => ModeRequest::WindowsNtXp,
-            ModeArg::WindowsXpLegacy => ModeRequest::WindowsXp,
             ModeArg::Linux => ModeRequest::IsolinuxLinux,
             ModeArg::Hybrid => ModeRequest::Hybrid,
             ModeArg::Uefi => ModeRequest::UefiOnly,
@@ -161,11 +128,6 @@ fn main() -> ExitCode {
         force: cli.force,
         verify: !cli.no_verify,
         verbose: cli.verbose,
-        xp_waiters_dir: cli.xp_waiters,
-        xp_unattended: cli.xp_unattended,
-        xp_product_key: cli.xp_product_key,
-        xp_computer_name: cli.xp_computer_name,
-        xp_full_name: cli.xp_full_name,
         boot_record_impl: cli.boot_record.into(),
     };
 

@@ -20,7 +20,7 @@ tests/               integration tests + golden fixtures
 ```
 
 Boot-record assembly (MBR, FAT32-PBR-with-preserved-BPB splice, NTFS PBR,
-XP-setup raw-LBA $LDR$ chainloader) lives in the separate
+and the historical XP boot records) lives in the separate
 [`mkmsbr`](https://github.com/jma24/mkmsbr) library (renamed from
 `bootrec` 2026-05-19), depended on as a path dep today and a published
 crate later. usbwin's Cargo.toml uses `package = "mkmsbr"` aliasing so
@@ -30,23 +30,16 @@ The Windows-mode pipelines have their own submodules under
 `crates/usbwin/src/pipeline/`:
 
 - `boot_records` — pure byte-producing wrappers around mkmsbr
-  (`build_mbr_win7`, `build_mbr_xp`, `splice_pbr_bootmgr`,
-  `splice_pbr_ntldr`). Has golden tests against checked-in `.bin`
+  (`build_mbr_win7`, `build_mbr_xp`, `splice_pbr_bootmgr`).
+  Has golden tests against checked-in `.bin`
   fixtures so any mkmsbr byte drift trips CI immediately.
 - `fat32` — minimal read-only FAT32 walker that finds a file's LBA
-  list. Used for XP's BOOTSECT.DAT raw-LBA loader (we walk FAT to find
-  `\$LDR$`'s on-disk clusters and hand them to mkmsbr's bootsector
-  builder).
-- `xp_staging` — the XP-specific filesystem dance: stage `\NTLDR`,
-  `\NTDETECT.COM`, `\$LDR$`, `\boot.ini`, `\TXTSETUP.SIF` at the root,
-  generate `\$WIN_NT$.~BT\BOOTSECT.DAT`, rename `\I386\` →
-  `\$WIN_NT$.~BT\` (text-mode setupldr source, no I/O), then ditto
-  `\$WIN_NT$.~BT\` → `\$WIN_NT$.~LS\I386\` (GUI-mode source, copied
-  to `C:\$WIN_NT$.~LS\` by text-mode setup) and drop the verbatim
-  USB_MultiBoot `ren_fold.cmd` / `undoren.cmd` rename scripts inside
-  the latter. See [`TECH_DEBT.md`](TECH_DEBT.md) for the remaining
-  ~580 MB duplication between `~BT` and `~LS\I386\`.
-- `windows_xp_sif`, `windows_xp_unattended` — XP-specific INI editors.
+  list. Kept for boot-record diagnostics and possible future filesystem
+  verification.
+- `windows_ntxp` — the active NT5/XP path. It writes the chenall GRUB4DOS
+  `grldr.mbr` boot track, formats one active FAT32 partition, stages
+  `GRLDR`, `menu.lst`, `XP.ISO`, and `FIRADISK.IMA`, then boots XP setup
+  by RAM-mapping the original ISO as a virtual CD.
 
 ## The five durability calls
 
@@ -56,7 +49,7 @@ The Windows-mode pipelines have their own submodules under
 4. **Shell-out is rare and centralized.** Partition tables are bytes, not `fdisk` calls. The only allowed shell-outs are `diskutil unmountDisk` / `mountDisk` / `eject`, wrapped in `usbwin-disk::macos` with retry + error context.
 5. **Test pyramid that doesn't burn USB sticks.**
    - Unit: BPB splice, MBR layout, ISO classifier on fixture bytes.
-   - Golden: byte-for-byte comparison of the four boot-record-producing functions (Win 7 MBR, XP MBR, BOOTMGR multi-sector PBR, NTLDR PBR) against checked-in goldens. Lives in `pipeline::boot_records` (the `#[cfg(test)]` mod). Catches "bootrec bumped and now we produce different bytes" automatically. Goldens at `tests/golden/*.bin`; refresh with `UPDATE_GOLDENS=1 cargo test ...`. The QEMU and real-hardware layers below cover boot-behavior; this layer covers byte stability.
+   - Golden: byte-for-byte comparison of the boot-record-producing functions (Win 7 MBR, XP MBR, BOOTMGR multi-sector PBR) against checked-in goldens. Lives in `pipeline::boot_records` (the `#[cfg(test)]` mod). Catches "bootrec bumped and now we produce different bytes" automatically. Goldens at `tests/golden/*.bin`; refresh with `UPDATE_GOLDENS=1 cargo test ...`. The QEMU and real-hardware layers below cover boot-behavior; this layer covers byte stability.
    - QEMU smoke: write to a disk image, boot it under qemu-system-i386, scrape serial output. *(Lives in bootrec, not usbwin — bootrec is where the byte production happens; usbwin's wrapper is what the golden tests cover.)*
    - Hardware (manual): the scenarios in [`HARDWARE_TESTS.md`](HARDWARE_TESTS.md), run before each release.
 
@@ -64,20 +57,25 @@ The Windows-mode pipelines have their own submodules under
 
 **Windows 7 install USB.** The Win 7 boot chain (`bootmgr` loaded by a FAT32 PBR, with `sources/install.wim` carrying the installer payload) is shared verbatim with Win 8, 10, and 11 — so one carefully-built code path covers all four versions of Windows.
 
-**Windows XP is *not* in MVP.** XP predates the `bootmgr` + `install.wim` design; it uses `NTLDR` + `i386/` + `txtsetup.sif`, and its text-mode setup was written assuming CD/floppy media. Booting an XP installer from USB requires a Grub4DOS-style chainloader and on-the-fly `txtsetup.sif` rewriting — substantial extra work that's better added as a dedicated `--type=windows-xp` mode on top of a working Vista+ path. This is why Rufus 3.x dropped XP support; we'll add it back as a layer once the foundation is solid.
+**Windows XP is now handled by `windows-ntxp`.** XP predates the
+`bootmgr` + `install.wim` design, so usbwin uses GRUB4DOS + FiraDisk instead of the
+deleted three-tree FAT32 staging path. Auto-detection maps NT5-class media
+(Windows 2000/XP/2003) to `windows-ntxp`; `--type=windows-xp` is a
+compatibility alias. Windows 2000 is classifier-covered but not yet a
+supported install target.
 
 Staging:
 
 - **v0.1** — hybrid mode (raw write for Linux/BSD ISOs). Ships the safety chokepoint, the verify pass, the macOS device layer. *Done.*
 - **v0.2** — Windows 7+ mode end-to-end via `ms-sys` shell-out. Full Windows install USB pipeline. *Done; hardware-verified on Dell E6410.*
-- **v0.3** — Windows XP mode (Grub4DOS-style chainloader, `txtsetup.sif` rewriter, USB-driver injection, optional `winnt.sif`). *Done.*
-- **v1.0** — `bootrec` library replaces the ms-sys shell-out as the default boot-record source. usbwin's Windows 7+ and XP pipelines link bootrec in-process; ms-sys becomes an opt-in `--boot-record=ms-sys` fallback. *Done for Win 7 (hardware-verified 2026-05-19); XP path implemented, hardware verification pending.*
-- **later** — Isolinux Linux mode, UEFI-only mode, ISO9660 auto-classifier.
+- **v0.3** — Windows XP mode via GRUB4DOS + FiraDisk. *Implemented; production hardware verification in progress.*
+- **v1.0** — `bootrec` library replaces the ms-sys shell-out as the default boot-record source. usbwin's Windows 7+ pipeline links bootrec in-process; ms-sys becomes an opt-in `--boot-record=ms-sys` fallback. *Done for Win 7 (hardware-verified 2026-05-19).*
+- **later** — Isolinux Linux mode and UEFI-only mode.
 
 ## The pipeline
 
 ```
-WritePlan (typed enum: Windows | Hybrid | IsolinuxLinux | UefiOnly)
+WritePlan (typed enum: Windows | WindowsNtXp | Hybrid | IsolinuxLinux | UefiOnly)
     │
     ▼
 DryRun ──► byte stream into Vec<u8>      (no root, no device)

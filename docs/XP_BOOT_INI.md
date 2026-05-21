@@ -184,6 +184,7 @@ requires more code than the rest of this combined.
   - Template: `USB_MultiBoot_10/usb_xpbt/boot.ini`
   - Composer: `USB_MultiBoot_10/USB_MultiBoot_10.cmd`
   - Per-entry append helper: `USB_MultiBoot_10/makebt/MakeBS3.cmd`
-- Our boot.ini: `crates/usbwin/src/pipeline/xp_staging.rs` (`BOOT_INI`)
-- Tech-debt entry #6: `docs/TECH_DEBT.md`
+- Historical usbwin boot.ini: deleted `crates/usbwin/src/pipeline/xp_staging.rs`
+  (`BOOT_INI`)
+- Current backlog: `docs/BACKLOG.md`
 - Hardware rig context: [[project-hardware-rig]] memory

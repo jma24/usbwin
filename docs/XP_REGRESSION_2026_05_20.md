@@ -5,12 +5,9 @@ in case the next session picks up cold. Hardware: Dell E6410, BIOS,
 SATA in ATA mode, SanDisk Extreme 64 GB on /dev/disk6. ISO: en_windows
 _xp_professional_with_service_pack_3_x86_cd_vl_x14-73974.iso.
 
-> **2026-05-20 PM update:** the diagnoses in this log have been
-> superseded by a research-pass + architectural pivot. The "Open
-> questions" section below reflects the mid-session understanding;
-> the post-research answers and the new action plan live in
-> [`RECOVERY_PLAN.md`](RECOVERY_PLAN.md). Read that doc first; this
-> one is now mostly archival.
+> **2026-05-21 update:** this log is historical. Active work now lives in
+> [`BACKLOG.md`](BACKLOG.md). The recovery summary is archived in
+> [`RECOVERY_PLAN.md`](RECOVERY_PLAN.md).
 
 ## State
 

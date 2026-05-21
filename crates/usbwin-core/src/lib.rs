@@ -60,18 +60,6 @@ pub struct Config {
     pub force: bool,
     pub verify: bool,
     pub verbose: bool,
-    /// XP-mode: directory containing `WaitBT.sys` and `Wait4UFD.sys`.
-    /// If present, those drivers are copied to the USB's I386/ and
-    /// declared in TXTSETUP.SIF (mitigates 0x7B BSOD on slow-USB-init
-    /// hardware). See docs/V0.3_WINDOWS_XP.md chunk 6.
-    pub xp_waiters_dir: Option<PathBuf>,
-    /// XP-mode: generate a `winnt.sif` answer file at I386/winnt.sif on
-    /// the USB. Skips most setup prompts at install time.
-    pub xp_unattended: bool,
-    /// XP-mode unattended-install fields (used only if `xp_unattended`).
-    pub xp_product_key: Option<String>,
-    pub xp_computer_name: Option<String>,
-    pub xp_full_name: Option<String>,
     /// Which implementation writes the MBR boot code and partition boot
     /// record. `Bootrec` links the native Rust library in-process;
     /// `MsSys` shells out to the upstream tool. See
@@ -104,7 +92,6 @@ pub enum ModeRequest {
     Auto,
     Windows,
     WindowsNtXp,
-    WindowsXp,
     IsolinuxLinux,
     Hybrid,
     UefiOnly,

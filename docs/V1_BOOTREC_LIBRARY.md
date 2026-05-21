@@ -2,7 +2,7 @@
 
 ## Status (2026-05-19)
 
-`bootrec` exists at [github.com/jma24/bootrec](https://github.com/jma24/bootrec) and is the **default** boot-record backend in usbwin (path dep, in-process). The Win 7 install-USB path (`bootrec::mbr_win7` + `bootrec::FAT32_PBR_BOOTMGR_MULTI_BOOT` spliced via `bootrec::splice_fat32_pbr_multi`) is hardware-verified on a Dell E6410 — boots end-to-end from `usbwin <iso> <device>` to the Win 7 "Install now" screen. The XP path (`bootrec::FAT32_PBR_NTLDR_BOOT` via `bootrec::splice_fat32_pbr`) is integrated in `pipeline/windows_xp.rs`; hardware verification pending.
+`bootrec` exists at [github.com/jma24/bootrec](https://github.com/jma24/bootrec) and is the **default** boot-record backend in usbwin (path dep, in-process). The Win 7 install-USB path (`bootrec::mbr_win7` + `bootrec::FAT32_PBR_BOOTMGR_MULTI_BOOT` spliced via `bootrec::splice_fat32_pbr_multi`) is hardware-verified on a Dell E6410 — boots end-to-end from `usbwin <iso> <device>` to the Win 7 "Install now" screen. The old XP NTLDR/PBR path was removed from usbwin on 2026-05-21; the active XP path is GRUB4DOS + FiraDisk (`windows-ntxp`) and does not use bootrec's NTLDR PBR.
 
 The `ms-sys` shell-out is preserved as `--boot-record=ms-sys` for byte-equality auditing. It is no longer required to build or run usbwin.
 

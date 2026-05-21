@@ -136,11 +136,11 @@ fn validate_capacity(plan: &WritePlan, info: &DeviceInfo) -> Result<()> {
 }
 
 fn write_grub4dos_mbr_track(info: &DeviceInfo, verify: bool) -> Result<()> {
-    let mut boot_track = GRLDR_MBR.to_vec();
-    patch_partition_table(&mut boot_track, info.size_bytes)?;
-
     let mut dev = RawDevice::open(&info.path, OpenMode::ReadWrite, &info.model)
         .context("opening whole disk for GRUB4DOS MBR write")?;
+    let mut boot_track = GRLDR_MBR.to_vec();
+    patch_partition_table(&mut boot_track, dev.size_bytes().map_err(anyhow_from_core)?)?;
+
     dev.write_at(0, &boot_track).map_err(anyhow_from_core)?;
     dev.sync().map_err(anyhow_from_core)?;
 

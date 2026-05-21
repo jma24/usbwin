@@ -12,14 +12,13 @@ A native macOS arm64 CLI for writing bootable USB sticks from any ISO — Window
 |------|-------|
 | Hybrid (Linux/BSD ISO raw write) | ✅ working since v0.1 |
 | Windows 7+ (BOOTMGR chain) | ✅ hardware-verified on Dell E6410 (2026-05-19) with both `--boot-record=bootrec` (default) and `--boot-record=ms-sys`. Same code path covers Win 8/10/11. |
-| Windows NT/XP (`windows-ntxp`) | ⏳ GRUB4DOS + FiraDisk production path implemented; hand-staged prototype hardware-verified end-to-end on Dell E6410 (2026-05-20), production burn in progress. |
-| Windows XP legacy (`windows-xp-legacy`) | ⚠️ old three-tree FAT32 path retained for comparison only; known to hit the GUI-mode CD prompt. |
+| Windows NT/XP (`windows-ntxp`) | ✅ GRUB4DOS + FiraDisk production path hardware-verified end-to-end on Dell E6410 (2026-05-21). |
 | Linux/isolinux | deferred |
 | UEFI-only | deferred |
 
 The MBR + FAT32 PBR bytes come from the sibling [`mkmsbr`](https://github.com/jma24/mkmsbr) library (renamed from `bootrec` 2026-05-19) by default, linked in-process — no external `ms-sys` binary required. The legacy `ms-sys` shell-out is still available as `--boot-record=ms-sys` for byte-equality auditing of Win 7 mode. usbwin imports it as `bootrec::*` via a Cargo `package = "mkmsbr"` alias for source-compat.
 
-See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the design, [`docs/V0.3_WINDOWS_XP.md`](docs/V0.3_WINDOWS_XP.md) for the XP recipe (and how it deviates from "clean"), and [`docs/TECH_DEBT.md`](docs/TECH_DEBT.md) for what we know is wrong but haven't fixed yet.
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the design, [`docs/XP_FIRADISK_PIPELINE.md`](docs/XP_FIRADISK_PIPELINE.md) for the active XP recipe, and [`docs/BACKLOG.md`](docs/BACKLOG.md) for release blockers and follow-up work.
 
 ## Why
 
@@ -73,7 +72,7 @@ repo — run them there.
 
 ```sh
 usbwin <iso-path> <device>
-       [--type=auto|windows|windows-ntxp|windows-xp-legacy|linux|hybrid|uefi]
+       [--type=auto|windows|windows-ntxp|linux|hybrid|uefi]
        [--label=<volume-label>]
        [--boot-record=bootrec|ms-sys]
        [--dry-run]
@@ -91,9 +90,11 @@ sudo usbwin winxp_sp3.iso /dev/rdisk6 --type=windows-ntxp
 usbwin --dry-run Win7_SP1.iso /dev/disk8     # no sudo needed; emits bytes to /tmp
 ```
 
-For XP-class media, `--type=auto` resolves to the newer `windows-ntxp`
-GRUB4DOS + FiraDisk path. The old path is available explicitly as
-`--type=windows-xp-legacy`.
+For NT5-class XP/2003 media, `--type=auto` resolves to the newer
+`windows-ntxp` GRUB4DOS + FiraDisk path. `--type=windows-xp` remains
+accepted as a compatibility alias for `windows-ntxp`. Windows 2000 media is
+recognized as NT5-class by auto-detect, but Win2k install support is still
+backlog work.
 
 ## Safety
 
