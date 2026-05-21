@@ -7,6 +7,7 @@
 //! pipeline can run against an in-memory `Vec<u8>` for unit tests just as
 //! easily as against `/dev/rdisk8`.
 
+use std::fmt;
 use std::path::PathBuf;
 use thiserror::Error;
 
@@ -65,6 +66,38 @@ pub struct Config {
     /// `MsSys` shells out to the upstream tool. See
     /// docs/V1_BOOTREC_LIBRARY.md.
     pub boot_record_impl: BootRecordImpl,
+    /// Optional NT5 answer-file settings. Currently consumed only by the
+    /// Windows 2000/XP GRUB4DOS + FiraDisk path.
+    pub unattended: Option<UnattendedConfig>,
+}
+
+#[derive(Clone)]
+pub struct UnattendedConfig {
+    pub product_key: Option<String>,
+    pub full_name: String,
+    pub organization: String,
+    pub computer_name: String,
+    pub admin_password: Option<String>,
+    pub timezone: Option<u16>,
+}
+
+impl fmt::Debug for UnattendedConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("UnattendedConfig")
+            .field(
+                "product_key",
+                &self.product_key.as_ref().map(|_| "<redacted>"),
+            )
+            .field("full_name", &self.full_name)
+            .field("organization", &self.organization)
+            .field("computer_name", &self.computer_name)
+            .field(
+                "admin_password",
+                &self.admin_password.as_ref().map(|_| "<redacted>"),
+            )
+            .field("timezone", &self.timezone)
+            .finish()
+    }
 }
 
 /// Backend used to write MBR boot code and the partition boot record.
@@ -95,4 +128,26 @@ pub enum ModeRequest {
     IsolinuxLinux,
     Hybrid,
     UefiOnly,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unattended_debug_redacts_secrets() {
+        let config = UnattendedConfig {
+            product_key: Some("AAAAA-BBBBB-CCCCC-DDDDD-EEEEE".into()),
+            full_name: "QA User".into(),
+            organization: "usbwin".into(),
+            computer_name: "XPTEST".into(),
+            admin_password: Some("secret".into()),
+            timezone: Some(35),
+        };
+
+        let debug = format!("{config:?}");
+        assert!(debug.contains("<redacted>"));
+        assert!(!debug.contains("AAAAA-BBBBB"));
+        assert!(!debug.contains("secret"));
+    }
 }

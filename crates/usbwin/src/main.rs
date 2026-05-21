@@ -15,16 +15,17 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, ValueEnum};
-use usbwin_core::{BootRecordImpl, ModeRequest};
+use usbwin_core::{BootRecordImpl, ModeRequest, UnattendedConfig};
 
 #[derive(Parser, Debug)]
 #[command(
     name = "usbwin",
     version,
     about = "Native arm64 macOS bootable-USB writer.",
-    long_about = "Writes a bootable USB stick from any ISO (Windows XP through 11, \
-                  hybrid Linux/BSD, isolinux Linux, or UEFI-only) on Apple Silicon \
-                  without Rosetta. See https://github.com/jma24/usbwin."
+    long_about = "Writes Windows 2000, XP, and Windows 7 install USB sticks \
+                  on Apple Silicon without Rosetta. Hybrid raw ISO writes are \
+                  available as a utility path, but generic boot-loader support \
+                  is not the v1 focus. See https://github.com/jma24/usbwin."
 )]
 struct Cli {
     /// Path to the ISO file.
@@ -64,6 +65,34 @@ struct Cli {
     /// `$USBWIN_MS_SYS` / PATH (legacy v0.2 path).
     #[arg(long = "boot-record", value_enum, default_value_t = BootRecordArg::Bootrec)]
     boot_record: BootRecordArg,
+
+    /// Inject I386/WINNT.SIF into a derived NT5 ISO for unattended XP/2000 setup.
+    #[arg(long)]
+    unattended: bool,
+
+    /// Product key to write into WINNT.SIF. Implies --unattended.
+    #[arg(long = "product-key")]
+    product_key: Option<String>,
+
+    /// FullName value for WINNT.SIF. Used with --unattended.
+    #[arg(long = "full-name", default_value = "usbwin")]
+    full_name: String,
+
+    /// OrgName value for WINNT.SIF. Used with --unattended.
+    #[arg(long = "organization", default_value = "")]
+    organization: String,
+
+    /// ComputerName value for WINNT.SIF. Use * to let setup generate one.
+    #[arg(long = "computer-name", default_value = "*")]
+    computer_name: String,
+
+    /// Administrator password for WINNT.SIF. Omit to make setup prompt.
+    #[arg(long = "admin-password")]
+    admin_password: Option<String>,
+
+    /// Windows setup timezone index for WINNT.SIF.
+    #[arg(long = "timezone")]
+    timezone: Option<u16>,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
@@ -108,6 +137,7 @@ impl From<ModeArg> for ModeRequest {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    let unattended = build_unattended_config(&cli);
 
     let filter = if cli.verbose {
         "usbwin=debug,info"
@@ -129,6 +159,7 @@ fn main() -> ExitCode {
         verify: !cli.no_verify,
         verbose: cli.verbose,
         boot_record_impl: cli.boot_record.into(),
+        unattended,
     };
 
     tracing::info!(
@@ -146,4 +177,22 @@ fn main() -> ExitCode {
             ExitCode::from(1)
         }
     }
+}
+
+fn build_unattended_config(cli: &Cli) -> Option<UnattendedConfig> {
+    if !(cli.unattended
+        || cli.product_key.is_some()
+        || cli.admin_password.is_some()
+        || cli.timezone.is_some())
+    {
+        return None;
+    }
+    Some(UnattendedConfig {
+        product_key: cli.product_key.clone(),
+        full_name: cli.full_name.clone(),
+        organization: cli.organization.clone(),
+        computer_name: cli.computer_name.clone(),
+        admin_password: cli.admin_password.clone(),
+        timezone: cli.timezone,
+    })
 }

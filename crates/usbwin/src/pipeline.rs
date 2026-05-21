@@ -9,6 +9,8 @@ pub mod confirm;
 pub mod diskutil;
 pub mod fat32;
 pub mod hybrid;
+pub mod ntxp_floppy;
+pub mod ntxp_iso;
 pub mod windows;
 pub mod windows_ntxp;
 
@@ -17,6 +19,10 @@ use usbwin_core::{BootMode, Config, ModeRequest, WritePlan};
 
 pub fn run(config: &Config) -> Result<()> {
     let plan = build_plan(config)?;
+
+    if config.unattended.is_some() && plan.mode != BootMode::WindowsNtXp {
+        bail!("--unattended is currently supported only with --type=windows-ntxp");
+    }
 
     if config.dry_run {
         tracing::info!(?plan, "dry-run: would execute plan");

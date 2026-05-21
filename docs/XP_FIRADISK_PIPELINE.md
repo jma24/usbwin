@@ -223,13 +223,24 @@ Input:
 - Target USB device.
 - Optional FiraDisk driver directory or floppy image.
 - Optional WinVBlock fallback driver directory or floppy image.
-- Optional XP answer-file settings, deferred until after the QEMU proof.
+- Optional XP/2000 answer-file settings.
 
 Output:
 
 - FAT32 USB booting GRUB4DOS.
 - `XP.ISO` copied byte-for-byte from input unless answer-file injection is
-  enabled.
+  enabled. A first `--unattended` implementation rebuilt the ISO with
+  `hdiutil makehybrid`, but hardware showed that changed the boot behavior
+  before `SETUPLDR.BIN` took over. A root `WINNT.SIF` sidecar was also
+  hardware-tested on 2026-05-21 and ignored by XP setup. The current
+  implementation writes the generated answer file to two setup-visible
+  locations: `A:\WINNT.SIF` inside the staged `FIRADISK.IMA`, and
+  `I386/WINNT.SIF` inside the staged copy of `XP.ISO`. The ISO patch appends
+  the file and adds an ISO9660 directory record without moving existing ISO
+  contents or the El Torito boot image.
+  - First hardware signal: after adding `A:\WINNT.SIF` to the FiraDisk
+    floppy, XP setup no longer prompted about driver signing. That strongly
+    suggests setup is consuming the floppy answer file.
 - `FIRADISK.IMA` staged.
 - `menu.lst` staged from a deterministic template.
 
@@ -240,6 +251,8 @@ Non-goals:
 - No NTLDR `boot.ini` menu.
 - No destructive wipe bootsector. Drive selection should be handled by
   GRUB4DOS disk mapping and the normal XP partitioner.
+- No unattended auto-partitioning by default. Generated answer files set
+  `AutoPartition=0` and `Repartition=No`.
 
 ## QEMU prototype checklist
 

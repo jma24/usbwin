@@ -13,11 +13,13 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use usbwin_core::{Config, Device, WritePlan};
+use usbwin_core::{Config, Device, UnattendedConfig, WritePlan};
 use usbwin_disk::raw::{OpenMode, RawDevice};
 use usbwin_disk::DeviceInfo;
 
 use super::diskutil;
+use super::ntxp_floppy;
+use super::ntxp_iso;
 
 const SECTOR_SIZE: u64 = 512;
 const PARTITION_START_LBA: u32 = 2048;
@@ -81,7 +83,7 @@ pub fn run(plan: &WritePlan, info: &DeviceInfo, config: &Config) -> Result<()> {
     let usb_mount = find_mount_for_label(&plan.label)
         .ok_or_else(|| anyhow!("formatted partition didn't appear in /Volumes"))?;
 
-    stage_files(plan, &usb_mount).context("staging GRUB4DOS/FiraDisk XP payload")?;
+    stage_files(plan, &usb_mount, config).context("staging GRUB4DOS/FiraDisk XP payload")?;
 
     diskutil::unmount_disk(&bsd_path).context("unmount after staging files")?;
     diskutil::eject(&bsd_path).context("eject after write")?;
@@ -181,15 +183,29 @@ fn patch_partition_table(mbr_track: &mut [u8], disk_size_bytes: u64) -> Result<(
     Ok(())
 }
 
-fn stage_files(plan: &WritePlan, usb_mount: &Path) -> Result<()> {
+fn stage_files(plan: &WritePlan, usb_mount: &Path, config: &Config) -> Result<()> {
     std::fs::write(usb_mount.join("GRLDR"), GRLDR)
         .with_context(|| format!("writing {}", usb_mount.join("GRLDR").display()))?;
     std::fs::write(usb_mount.join("menu.lst"), MENU_LST)
         .with_context(|| format!("writing {}", usb_mount.join("menu.lst").display()))?;
-    std::fs::write(usb_mount.join("FIRADISK.IMA"), FIRADISK_IMA)
-        .with_context(|| format!("writing {}", usb_mount.join("FIRADISK.IMA").display()))?;
+    let xp_iso = usb_mount.join("XP.ISO");
+    copy_iso_as_xp_iso(&plan.iso_path, &xp_iso)?;
+    if let Some(unattended) = &config.unattended {
+        let sif = generate_winnt_sif(unattended);
+        let mut firadisk = FIRADISK_IMA.to_vec();
+        ntxp_floppy::add_winnt_sif(&mut firadisk, sif.as_bytes())
+            .context("injecting A:\\WINNT.SIF into FiraDisk floppy image")?;
+        std::fs::write(usb_mount.join("FIRADISK.IMA"), &firadisk)
+            .with_context(|| format!("writing {}", usb_mount.join("FIRADISK.IMA").display()))?;
+        println!("usbwin: injected A:\\WINNT.SIF into staged FIRADISK.IMA");
 
-    copy_iso_as_xp_iso(&plan.iso_path, &usb_mount.join("XP.ISO"))?;
+        ntxp_iso::inject_winnt_sif(&xp_iso, sif.as_bytes())
+            .with_context(|| format!("injecting I386/WINNT.SIF into {}", xp_iso.display()))?;
+        println!("usbwin: injected I386/WINNT.SIF into staged XP.ISO for unattended setup");
+    } else {
+        std::fs::write(usb_mount.join("FIRADISK.IMA"), FIRADISK_IMA)
+            .with_context(|| format!("writing {}", usb_mount.join("FIRADISK.IMA").display()))?;
+    }
 
     let _ = std::process::Command::new("sync").status();
     println!("usbwin: staged GRLDR, menu.lst, XP.ISO, FIRADISK.IMA");
@@ -226,6 +242,62 @@ fn copy_iso_as_xp_iso(src: &Path, dest: &Path) -> Result<()> {
     }
     pb.finish();
     Ok(())
+}
+
+fn generate_winnt_sif(config: &UnattendedConfig) -> String {
+    let mut out = String::new();
+    out.push_str("[Data]\r\n");
+    out.push_str("AutoPartition=0\r\n");
+    out.push_str("MsDosInitiated=\"0\"\r\n");
+    out.push_str("UnattendedInstall=\"Yes\"\r\n");
+    out.push_str("\r\n[Unattended]\r\n");
+    out.push_str("UnattendMode=DefaultHide\r\n");
+    out.push_str("OemSkipEula=Yes\r\n");
+    out.push_str("TargetPath=\\WINDOWS\r\n");
+    out.push_str("Repartition=No\r\n");
+    out.push_str("FileSystem=*\r\n");
+    out.push_str("DriverSigningPolicy=Ignore\r\n");
+    out.push_str("NonDriverSigningPolicy=Ignore\r\n");
+    out.push_str("\r\n[GuiUnattended]\r\n");
+    match &config.admin_password {
+        Some(password) => {
+            out.push_str("AdminPassword=");
+            out.push_str(&quoted_sif_value(password));
+            out.push_str("\r\n");
+        }
+        None => out.push_str("AdminPassword=*\r\n"),
+    }
+    out.push_str("EncryptedAdminPassword=NO\r\n");
+    out.push_str("OEMSkipRegional=1\r\n");
+    out.push_str("OemSkipWelcome=1\r\n");
+    if let Some(timezone) = config.timezone {
+        out.push_str(&format!("TimeZone={timezone}\r\n"));
+    }
+    out.push_str("\r\n[UserData]\r\n");
+    if let Some(product_key) = &config.product_key {
+        out.push_str("ProductKey=");
+        out.push_str(product_key);
+        out.push_str("\r\n");
+    }
+    out.push_str("FullName=");
+    out.push_str(&quoted_sif_value(&config.full_name));
+    out.push_str("\r\nOrgName=");
+    out.push_str(&quoted_sif_value(&config.organization));
+    out.push_str("\r\nComputerName=");
+    if config.computer_name == "*" {
+        out.push('*');
+    } else {
+        out.push_str(&quoted_sif_value(&config.computer_name));
+    }
+    out.push_str("\r\n\r\n[Identification]\r\n");
+    out.push_str("JoinWorkgroup=WORKGROUP\r\n");
+    out.push_str("\r\n[Networking]\r\n");
+    out.push_str("InstallDefaultComponents=Yes\r\n");
+    out
+}
+
+fn quoted_sif_value(value: &str) -> String {
+    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
 fn update_iso_message(pb: &ProgressBar, copied: u64, total: u64, start: Instant) {
@@ -313,5 +385,48 @@ mod tests {
         assert!(MENU_LST.contains("title 2. Continue XP GUI-mode setup"));
         assert!(MENU_LST.contains("map --mem /XP.ISO (0xff)"));
         assert!(MENU_LST.contains("chainloader (hd0)+1"));
+    }
+
+    #[test]
+    fn generated_winnt_sif_keeps_manual_partitioning() {
+        let sif = generate_winnt_sif(&UnattendedConfig {
+            product_key: Some("AAAAA-BBBBB-CCCCC-DDDDD-EEEEE".into()),
+            full_name: "QA User".into(),
+            organization: "usbwin".into(),
+            computer_name: "*".into(),
+            admin_password: None,
+            timezone: Some(35),
+        });
+
+        assert!(sif.contains("[Data]\r\n"));
+        assert!(sif.contains("AutoPartition=0\r\n"));
+        assert!(sif.contains("UnattendedInstall=\"Yes\"\r\n"));
+        assert!(sif.contains("OemSkipEula=Yes\r\n"));
+        assert!(sif.contains("Repartition=No\r\n"));
+        assert!(sif.contains("FileSystem=*\r\n"));
+        assert!(sif.contains("AdminPassword=*\r\n"));
+        assert!(sif.contains("TimeZone=35\r\n"));
+        assert!(sif.contains("ProductKey=AAAAA-BBBBB-CCCCC-DDDDD-EEEEE\r\n"));
+        assert!(sif.contains("FullName=\"QA User\"\r\n"));
+        assert!(sif.contains("ComputerName=*\r\n"));
+        assert!(!sif.contains("DestinationDiskNumber"));
+        assert!(!sif.contains("DestinationPartitionNumber"));
+    }
+
+    #[test]
+    fn generated_winnt_sif_quotes_user_values() {
+        let sif = generate_winnt_sif(&UnattendedConfig {
+            product_key: None,
+            full_name: "A \"Quoted\" User".into(),
+            organization: "C:\\Lab".into(),
+            computer_name: "XPTEST".into(),
+            admin_password: Some("p@ss \"word\"".into()),
+            timezone: None,
+        });
+
+        assert!(sif.contains("AdminPassword=\"p@ss \\\"word\\\"\"\r\n"));
+        assert!(sif.contains("FullName=\"A \\\"Quoted\\\" User\"\r\n"));
+        assert!(sif.contains("OrgName=\"C:\\\\Lab\"\r\n"));
+        assert!(sif.contains("ComputerName=\"XPTEST\"\r\n"));
     }
 }

@@ -76,6 +76,33 @@ Done means:
 
 ## Before v1.0
 
+### Post-FiraDisk-migration cleanup
+
+Status: 1.0 blocker. Do these before Win2k work so the XP path is on
+clean ground first.
+
+The FiraDisk migration replaced the old NTLDR / boot.ini / I386-staging
+pipeline with GRUB4DOS + RAM-mapped ISO, but several pieces of the old
+path are still in the tree and several memory/docs notes are stale.
+
+Done means:
+- Delete the empty `crates/usbwin/src/pipeline/xp_assets/` directory.
+- Decide the fate of `crates/usbwin/src/pipeline/fat32.rs` (entire module
+  is `#![allow(dead_code)]`; it was the FAT32 walker that fed the never-
+  shipped bootrec `build_xp_setup_chain_bootsect` LDR$ loader). Either
+  delete the module and its tests, or move it to a clearly-labelled
+  experimental location with a written reason to keep it.
+- Delete `boot_records.rs::build_mbr_xp` and `tests/golden/mbr_xp_64gb.bin`
+  if confirmed unused (XP now writes GRUB4DOS MBR, not MBR_XP or
+  MBR_WIN7), or rewrite the doc comment so it reflects current reality.
+- Fix the stale comment block at `boot_records.rs:35` that claims "XP mode
+  also writes MBR_WIN7"; XP mode writes GRLDR_MBR.
+- Audit `docs/XP_BOOT_INI.md` and similar boot.ini-era documents; mark
+  archival or delete. The current XP boot chain is in
+  `docs/XP_FIRADISK_PIPELINE.md`.
+- Resolve the `-c 8` 4 KiB FAT32 cluster forcing in
+  `diskutil::newfs_msdos_fat32` (also listed under Cleanup below).
+
 ### Windows 2000 install support
 
 Status: 1.0 blocker.
