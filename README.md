@@ -6,13 +6,14 @@ A native macOS arm64 CLI for writing bootable USB sticks from any ISO — Window
 
 ## Status
 
-**Alpha.** Two modes work; one is in active debugging; the rest are deferred.
+**Alpha.** Three modes work; the rest are deferred.
 
 | Mode | State |
 |------|-------|
 | Hybrid (Linux/BSD ISO raw write) | ✅ working since v0.1 |
 | Windows 7+ (BOOTMGR chain) | ✅ hardware-verified on Dell E6410 (2026-05-19) with both `--boot-record=bootrec` (default) and `--boot-record=ms-sys`. Same code path covers Win 8/10/11. |
-| Windows XP | ⚠️ boot chain wired through text-mode setup as of 2026-05-19; **stack of known kludges** documented in [`docs/TECH_DEBT.md`](docs/TECH_DEBT.md), not yet recommended for daily use. |
+| Windows NT/XP (`windows-ntxp`) | ⏳ GRUB4DOS + FiraDisk production path implemented; hand-staged prototype hardware-verified end-to-end on Dell E6410 (2026-05-20), production burn in progress. |
+| Windows XP legacy (`windows-xp-legacy`) | ⚠️ old three-tree FAT32 path retained for comparison only; known to hit the GUI-mode CD prompt. |
 | Linux/isolinux | deferred |
 | UEFI-only | deferred |
 
@@ -72,7 +73,7 @@ repo — run them there.
 
 ```sh
 usbwin <iso-path> <device>
-       [--type=auto|windows|windows-xp|linux|hybrid|uefi]
+       [--type=auto|windows|windows-ntxp|windows-xp-legacy|linux|hybrid|uefi]
        [--label=<volume-label>]
        [--boot-record=bootrec|ms-sys]
        [--dry-run]
@@ -86,12 +87,13 @@ Examples:
 ```sh
 sudo usbwin Win7_SP1.iso /dev/disk8
 sudo usbwin ubuntu-22.04.iso /dev/disk8 --type=hybrid
-sudo usbwin winxp_sp3.iso /dev/rdisk6 --type=windows-xp     # XP auto-detect is unreliable
+sudo usbwin winxp_sp3.iso /dev/rdisk6 --type=windows-ntxp
 usbwin --dry-run Win7_SP1.iso /dev/disk8     # no sudo needed; emits bytes to /tmp
 ```
 
-Windows XP installs require `--type=windows-xp` explicitly — the auto-detector
-currently misclassifies XP ISOs.
+For XP-class media, `--type=auto` resolves to the newer `windows-ntxp`
+GRUB4DOS + FiraDisk path. The old path is available explicitly as
+`--type=windows-xp-legacy`.
 
 ## Safety
 

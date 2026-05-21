@@ -17,7 +17,12 @@ pub enum BootMode {
     /// MBR + active FAT32 + bootmgr-loading PBR + file copy. Win 7 through 11.
     Windows,
 
-    /// XP install USB. NTLDR-based boot chain (`ms-sys --mbr` + `--fat32nt`),
+    /// NT-family XP/2000-style install USB using GRUB4DOS + FiraDisk:
+    /// RAM-map the original ISO as a virtual CD, expose it to protected-mode
+    /// setup with FiraDisk, and drive-swap so the internal HDD is first.
+    WindowsNtXp,
+
+    /// Legacy XP install USB. NTLDR-based boot chain (`ms-sys --mbr` + `--fat32nt`),
     /// FAT32 file copy from i386/-style install media, plus the WinSetupFromUSB
     /// modifications: txtsetup.sif edited to move USB drivers into
     /// `BootBusExtenders.Load`, optional WaitBT/Wait4UFD waiter injection,
@@ -38,7 +43,8 @@ impl BootMode {
         match self {
             BootMode::Hybrid => "hybrid",
             BootMode::Windows => "windows",
-            BootMode::WindowsXp => "windows-xp",
+            BootMode::WindowsNtXp => "windows-ntxp",
+            BootMode::WindowsXp => "windows-xp-legacy",
             BootMode::IsolinuxLinux => "linux",
             BootMode::UefiOnly => "uefi",
         }

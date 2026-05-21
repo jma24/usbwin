@@ -116,8 +116,10 @@ impl From<BootRecordArg> for BootRecordImpl {
 enum ModeArg {
     Auto,
     Windows,
-    #[value(name = "windows-xp")]
-    WindowsXp,
+    #[value(name = "windows-ntxp", alias = "windows-xp")]
+    WindowsNtXp,
+    #[value(name = "windows-xp-legacy")]
+    WindowsXpLegacy,
     Linux,
     Hybrid,
     Uefi,
@@ -128,7 +130,8 @@ impl From<ModeArg> for ModeRequest {
         match m {
             ModeArg::Auto => ModeRequest::Auto,
             ModeArg::Windows => ModeRequest::Windows,
-            ModeArg::WindowsXp => ModeRequest::WindowsXp,
+            ModeArg::WindowsNtXp => ModeRequest::WindowsNtXp,
+            ModeArg::WindowsXpLegacy => ModeRequest::WindowsXp,
             ModeArg::Linux => ModeRequest::IsolinuxLinux,
             ModeArg::Hybrid => ModeRequest::Hybrid,
             ModeArg::Uefi => ModeRequest::UefiOnly,
@@ -139,7 +142,11 @@ impl From<ModeArg> for ModeRequest {
 fn main() -> ExitCode {
     let cli = Cli::parse();
 
-    let filter = if cli.verbose { "usbwin=debug,info" } else { "usbwin=info,warn" };
+    let filter = if cli.verbose {
+        "usbwin=debug,info"
+    } else {
+        "usbwin=info,warn"
+    };
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::new(filter))
         .with_target(false)

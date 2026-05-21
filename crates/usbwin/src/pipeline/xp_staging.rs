@@ -130,9 +130,8 @@ pub fn stage_root_boot_files(usb_mount: &Path, i386: &Path) -> Result<()> {
             i386.join(src_name.to_lowercase())
         };
         let dst = usb_mount.join(dst_name);
-        std::fs::copy(&actual_src, &dst).with_context(|| {
-            format!("copy {} -> {}", actual_src.display(), dst.display())
-        })?;
+        std::fs::copy(&actual_src, &dst)
+            .with_context(|| format!("copy {} -> {}", actual_src.display(), dst.display()))?;
     }
 
     std::fs::write(usb_mount.join("boot.ini"), BOOT_INI)
@@ -193,9 +192,7 @@ pub fn build_bootsect_dat(pbr_sector0: &[u8]) -> Result<Vec<u8>> {
 /// see bootrec/docs/XP_SETUP_CHAIN_BOOTSECT_SPEC.md. Once that ships,
 /// uncomment the marked line and delete the `bail!`. Everything else
 /// (FAT walk, run coalesce, file extent → runs) is wired up and tested.
-pub fn build_chain_bootsect_via_lba(
-    partition_device: &mut dyn Device,
-) -> Result<Vec<u8>> {
+pub fn build_chain_bootsect_via_lba(partition_device: &mut dyn Device) -> Result<Vec<u8>> {
     let mut sector0 = vec![0u8; 512];
     partition_device
         .read_at(0, &mut sector0)
@@ -243,30 +240,50 @@ pub fn build_chain_bootsect_via_lba(
         .map_err(|e| anyhow!("bootrec::build_xp_setup_chain_bootsect: {e}"))
 }
 
-/// Move `\I386\` → `\$WIN_NT$.~BT\` via a FAT32 directory-entry rename.
-/// No data copy. Setupldr launched via BOOTSECT.DAT chainload reads its
-/// source files from `\$WIN_NT$.~BT\` by default, so the I386 tree must
-/// live there (txtsetup.sif, biosinfo.inf, kernel, drivers, the
-/// `HIVE*.INF` registry seeds — setupdd reads them all from this
-/// directory; missing files leave the target SYSTEM hive broken and
-/// produce PROCESS1_INITIALIZATION_FAILED 0x6B / 0xC000003A at smss-init).
+/// Replicate `\I386\` contents into `\$WIN_NT$.~BT\` via `ditto`.
+/// `\I386\` STAYS at the partition root — both must exist.
 ///
-/// Previously we `ditto`'d `\I386\` → `\$WIN_NT$.~BT\` (~580 MB of
-/// redundant I/O — the ISO copy already put the tree on the partition
-/// at `\I386\`; the FAT directory entry just needs to point at a new
-/// name). Rename is instant.
-pub fn move_i386_to_bt(usb_mount: &Path) -> Result<()> {
+/// Setupldr launched via BOOTSECT.DAT chainload reads its source files
+/// from `\$WIN_NT$.~BT\` by default, so the I386 tree must live there
+/// (txtsetup.sif, biosinfo.inf, kernel, drivers, the `HIVE*.INF`
+/// registry seeds — setupdd reads them all from this directory; missing
+/// files leave the target SYSTEM hive broken and produce
+/// PROCESS1_INITIALIZATION_FAILED 0x6B / 0xC000003A at smss-init).
+///
+/// **Why we don't `std::fs::rename` here**: a rename refactor was
+/// landed 2026-05-20 (commit 8f68b44) and looked correct on the
+/// surface — text-mode setup ran, files copied, reboot. But it
+/// removed `\I386\` at the partition root, and GUI-mode XP setup
+/// walks every drive letter looking for `\I386\` sentinel files
+/// (setupreg.hiv, layout.inf) when it can't find its source via
+/// `\$WIN_NT$.~LS\I386\` (which `ren_fold.cmd` renames to
+/// `\WIN_NT.LS\I386\` at the text→GUI transition, making the ~LS
+/// path also unavailable). With `\I386\` gone, GUI-mode setup
+/// dropped into the "Insert the CD labeled Windows XP Professional
+/// Service Pack 3 CD" prompt loop. Reverted 2026-05-20 PM — costs
+/// ~580 MB and one ditto pass (~30s), the price of a working install.
+///
+/// Faster alternative for the future: identify exactly which I386
+/// files GUI-mode setup probes for and stage only those at `\I386\`
+/// (rest of the tree stays only in `\$WIN_NT$.~BT\`). Deferred
+/// pending instrumentation of setupdd's source-discovery path.
+pub fn replicate_i386_to_bt(usb_mount: &Path) -> Result<()> {
     let i386 = find_i386_dir(usb_mount)?;
     let bt = usb_mount.join("$WIN_NT$.~BT");
-    if bt.exists() {
+    std::fs::create_dir_all(&bt).with_context(|| format!("creating {}", bt.display()))?;
+
+    let status = std::process::Command::new("ditto")
+        .arg(&i386)
+        .arg(&bt)
+        .status()
+        .with_context(|| format!("invoking ditto {} {}", i386.display(), bt.display()))?;
+    if !status.success() {
         bail!(
-            "{} already exists — pipeline ordering bug? (expected ~BT to \
-             be absent before move_i386_to_bt)",
+            "ditto {} {} failed with {status}",
+            i386.display(),
             bt.display()
         );
     }
-    std::fs::rename(&i386, &bt)
-        .with_context(|| format!("rename {} -> {}", i386.display(), bt.display()))?;
     Ok(())
 }
 
@@ -296,10 +313,9 @@ pub const UNDOREN_CMD: &[u8] = include_bytes!("xp_assets/undoren.cmd");
 /// the mounted USB, and place the canonical rename scripts (`ren_fold.cmd`,
 /// `undoren.cmd`) at the new directory's root.
 ///
-/// Sources from `~BT` (not `\I386\`) because by this point in the pipeline
-/// `\I386\` has been renamed to `~BT` (see `move_i386_to_bt`). The two
-/// directories are byte-identical — `~BT` is the I386 tree with a
-/// different name. Same content, one fewer redundant copy operation.
+/// Sources from `~BT` (not `\I386\`) — they're byte-identical at this
+/// point (replicate_i386_to_bt ran just before us). Same end-state
+/// either way; ~BT is just an arbitrary pick.
 ///
 /// `\$WIN_NT$.~LS\I386\` is what XP GUI-mode setup expects as the install
 /// source after text-mode finishes — the name is hard-coded in `setupdd.sys`
@@ -315,22 +331,19 @@ pub fn stage_ls_from_bt(usb_mount: &Path) -> Result<()> {
     let bt = usb_mount.join("$WIN_NT$.~BT");
     if !bt.is_dir() {
         bail!(
-            "expected {} to exist (run move_i386_to_bt first)",
+            "expected {} to exist (run replicate_i386_to_bt first)",
             bt.display()
         );
     }
     let ls = usb_mount.join("$WIN_NT$.~LS");
     let ls_i386 = ls.join("I386");
-    std::fs::create_dir_all(&ls_i386)
-        .with_context(|| format!("creating {}", ls_i386.display()))?;
+    std::fs::create_dir_all(&ls_i386).with_context(|| format!("creating {}", ls_i386.display()))?;
 
     let status = std::process::Command::new("ditto")
         .arg(&bt)
         .arg(&ls_i386)
         .status()
-        .with_context(|| {
-            format!("invoking ditto {} {}", bt.display(), ls_i386.display())
-        })?;
+        .with_context(|| format!("invoking ditto {} {}", bt.display(), ls_i386.display()))?;
     if !status.success() {
         bail!(
             "ditto {} {} failed with {status}",
@@ -356,8 +369,7 @@ pub fn stage_ls_from_bt(usb_mount: &Path) -> Result<()> {
 /// directory if missing.
 pub fn write_bootsect_dat(usb_mount: &Path, bytes: &[u8]) -> Result<()> {
     let dir = usb_mount.join("$WIN_NT$.~BT");
-    std::fs::create_dir_all(&dir)
-        .with_context(|| format!("creating {}", dir.display()))?;
+    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
     let dest = dir.join("BOOTSECT.DAT");
     std::fs::write(&dest, bytes).with_context(|| format!("writing {}", dest.display()))?;
     Ok(())
@@ -391,8 +403,7 @@ pub fn stage_wipe_bootsect(usb_mount: &Path) -> Result<()> {
         bail!("WIPE_BOOTSECT_BOOT missing 0x55 0xAA boot signature");
     }
     let dest = usb_mount.join("WIPE.DAT");
-    std::fs::write(&dest, bytes)
-        .with_context(|| format!("writing {}", dest.display()))?;
+    std::fs::write(&dest, bytes).with_context(|| format!("writing {}", dest.display()))?;
     Ok(())
 }
 

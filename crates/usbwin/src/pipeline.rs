@@ -10,6 +10,7 @@ pub mod diskutil;
 pub mod fat32;
 pub mod hybrid;
 pub mod windows;
+pub mod windows_ntxp;
 pub mod windows_xp;
 pub mod windows_xp_sif;
 pub mod windows_xp_unattended;
@@ -39,7 +40,9 @@ pub fn run(config: &Config) -> Result<()> {
         .map_err(|e| anyhow!("device lookup for {target}: {e}"))?
         .ok_or_else(|| anyhow!("no such device: {target}"))?;
 
-    let safety = usbwin_disk::SafetyConfig { force: config.force };
+    let safety = usbwin_disk::SafetyConfig {
+        force: config.force,
+    };
     info.check_writable(&safety)
         .map_err(|e| anyhow!("safety check failed: {e}"))?;
 
@@ -57,12 +60,17 @@ pub fn run(config: &Config) -> Result<()> {
     }
 
     match plan.mode {
-        BootMode::Hybrid => hybrid::run(&plan, &info, config.verify)
-            .context("hybrid mode pipeline failed"),
-        BootMode::Windows => windows::run(&plan, &info, config)
-            .context("Windows 7+ mode pipeline failed"),
-        BootMode::WindowsXp => windows_xp::run(&plan, &info, config)
-            .context("Windows XP mode pipeline failed"),
+        BootMode::Hybrid => {
+            hybrid::run(&plan, &info, config.verify).context("hybrid mode pipeline failed")
+        }
+        BootMode::Windows => {
+            windows::run(&plan, &info, config).context("Windows 7+ mode pipeline failed")
+        }
+        BootMode::WindowsNtXp => windows_ntxp::run(&plan, &info, config)
+            .context("Windows NT/XP FiraDisk mode pipeline failed"),
+        BootMode::WindowsXp => {
+            windows_xp::run(&plan, &info, config).context("Windows XP legacy mode pipeline failed")
+        }
         BootMode::IsolinuxLinux => bail!("isolinux Linux mode lands in v0.4"),
         BootMode::UefiOnly => bail!("UEFI-only mode lands in v0.4"),
     }
@@ -78,6 +86,7 @@ fn build_plan(config: &Config) -> Result<WritePlan> {
     let mode = resolve_mode(config)?;
     let label = config.label.clone().unwrap_or_else(|| match mode {
         BootMode::Windows => "WIN7".into(),
+        BootMode::WindowsNtXp => "USBWINXP".into(),
         BootMode::WindowsXp => "WINXP".into(),
         BootMode::Hybrid | BootMode::IsolinuxLinux | BootMode::UefiOnly => "USBWIN".into(),
     });
@@ -91,12 +100,22 @@ fn build_plan(config: &Config) -> Result<WritePlan> {
 
 fn resolve_mode(config: &Config) -> Result<BootMode> {
     match config.mode {
-        ModeRequest::Auto => usbwin_iso::classify(&config.iso_path).map_err(|e| {
-            anyhow!(
-                "could not auto-classify ISO ({e}); pass --type=windows|hybrid|linux|uefi explicitly"
-            )
-        }),
+        ModeRequest::Auto => {
+            let detected = usbwin_iso::classify(&config.iso_path).map_err(|e| {
+                anyhow!(
+                    "could not auto-classify ISO ({e}); pass --type=windows|windows-ntxp|hybrid|linux|uefi explicitly"
+                )
+            })?;
+            Ok(match detected {
+                // XP-class media should use the hardware-green GRUB4DOS +
+                // FiraDisk path by default. The old three-tree path remains
+                // available explicitly as --type=windows-xp-legacy.
+                BootMode::WindowsXp => BootMode::WindowsNtXp,
+                other => other,
+            })
+        }
         ModeRequest::Windows => Ok(BootMode::Windows),
+        ModeRequest::WindowsNtXp => Ok(BootMode::WindowsNtXp),
         ModeRequest::WindowsXp => Ok(BootMode::WindowsXp),
         ModeRequest::Hybrid => Ok(BootMode::Hybrid),
         ModeRequest::IsolinuxLinux => Ok(BootMode::IsolinuxLinux),

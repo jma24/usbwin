@@ -81,7 +81,6 @@ impl Flavor {
             // Text-mode setup banner + the F6/repair prompt that follows.
             Flavor::WindowsXp => &[
                 "welcome to setup",
-                "windows xp",
                 "setup is starting",
                 "press f6 if you",
                 "press r to repair",
@@ -455,4 +454,3 @@ impl Drop for QemuGuard {
         self.shutdown();
     }
 }
-

@@ -4,8 +4,13 @@ What we know is wrong but kept because something else was more urgent.
 This file exists so the next refactor pass has a checklist instead of a
 git-log-archaeology project.
 
-Last updated: 2026-05-19 (after the XP GUI-mode-CDROM-prompt fix landed and
-hardware-verified end-to-end on the E6410).
+Last updated: 2026-05-20 PM (RECOVERY_PLAN.md FiraDisk pivot — several XP
+items below are *pending-obsolete* if the pivot lands).
+
+> **Read first:** [`RECOVERY_PLAN.md`](RECOVERY_PLAN.md) is the live plan
+> for unblocking XP. Several items below are flagged "pending-obsolete
+> by FiraDisk pivot" — keep them documented but don't invest cleanup
+> effort until the pivot is hardware-green or rejected.
 
 ## Severity legend
 
@@ -17,19 +22,40 @@ hardware-verified end-to-end on the E6410).
 
 ## XP mode
 
-### ✅ I386 replicated to $WIN_NT$.~BT (resolved 2026-05-20, commit 8f68b44)
+### ❌ Rename-not-replicate refactor reverted (8f68b44 reverted 2026-05-20 PM)
 
-Was `replicate_i386_to_bt` doing a ~580 MB `ditto`. Now `move_i386_to_bt`
-does a FAT32 directory-entry rename `\I386\` → `\$WIN_NT$.~BT\` —
-instant, no I/O. Setupldr finds the same files at the same path.
-Hardware-verified on Dell E6410 (no BSOD, no status-18).
+8f68b44 replaced the `\I386\` → `\$WIN_NT$.~BT\` `ditto` with a
+`std::fs::rename` to save ~580 MB and ~30s. Looked correct through
+text-mode setup (file copy, reboot) and the commit was marked
+"hardware-verified on Dell E6410." It wasn't verified through
+GUI-mode setup — the verification ran text-mode only.
 
-### 🟧 Two full I386 trees on the USB (~BT + ~LS\I386\, ~1.16 GB)
+GUI-mode XP setup walks every drive letter looking for `\I386\`
+sentinel files (setupreg.hiv, layout.inf) when its primary source
+path `\$WIN_NT$.~LS\I386\` is unavailable. That path is renamed to
+`\WIN_NT.LS\I386\` by `ren_fold.cmd` at the text→GUI transition, so
+the ~LS path doesn't survive past phase 1. With `\I386\` also gone
+(renamed to ~BT), GUI-mode setup has nowhere to look → drops into
+the "Insert the CD labeled Windows XP Professional Service Pack 3 CD
+into your CD-ROM drive — Press ENTER when ready" prompt loop.
+Pressing Enter does nothing because there's no CD; pressing it
+forever is the user's only escape.
 
-Was three trees (~1.74 GB); 2026-05-20 work brought it to two (rename
-+ ISO-root trim). The remaining duplication: `\$WIN_NT$.~BT\` and
-`\$WIN_NT$.~LS\I386\` are byte-identical clones of the I386 tree.
+Reverted to the ditto-based `replicate_i386_to_bt`. `\I386\` stays
+at the root. 30s and ~580 MB are the cost of working GUI-mode setup.
 
+**Don't try this again** without first instrumenting setupdd's source-
+discovery path. The TODO below is the only safe way to claw back this
+disk space.
+
+### 🟧 Three full I386 trees on the USB (\I386\ + ~BT + ~LS\I386\, ~1.74 GB) — *pending-obsolete by FiraDisk pivot, see RECOVERY_PLAN.md §4*
+
+Each one is needed for a different setup phase:
+
+- `\I386\` — GUI-mode setup's drive-letter scan target. Required for
+  setupdd to find a source via the `\I386\setupreg.hiv` / `layout.inf`
+  sentinel check. Cannot be eliminated until we know exactly which
+  files setupdd probes and stage only those.
 - `\$WIN_NT$.~BT\` — text-mode setupldr source. **Required as a full
   mirror** — setupldr-byte-patch attempts (`I386` + 8 spaces, and
   `$WIN_NT$.~LS`) both BSOD'd at PROCESS1_INITIALIZATION_FAILED
@@ -40,11 +66,13 @@ Was three trees (~1.74 GB); 2026-05-20 work brought it to two (rename
   HIVE\*.INF and other non-FloppyFiles entries from ~BT at runtime.
 - `\$WIN_NT$.~LS\I386\` — GUI-mode source, copied to
   `C:\$WIN_NT$.~LS\I386\` on the target HDD by text-mode setup.
+  `ren_fold.cmd` renames the USB-side `~LS` to `WIN_NT.LS` at the
+  text→GUI transition so GUI-mode's boot-volume sanity check passes
+  — which is *why* GUI-mode has to fall back to drive-walking `\I386\`.
 
-Recovering the remaining ~580 MB needs a profile of what setupdd
-actually opens from `~BT` during text-mode (not derivable from
-DOSNET.INF alone). Hardware-trace or kernel-debugger territory.
-Deferred.
+Recovering ~1.16 GB (collapsing to one tree) needs a profile of what
+setupdd actually opens at every phase, not derivable from DOSNET.INF
+alone. Hardware-trace or kernel-debugger territory. Deferred.
 
 Sub-item (the original TXTSETUP.SIF triple-copy): we stage TXTSETUP.SIF
 at root, in `\$WIN_NT$.~BT\` (from the rename), AND in
@@ -58,7 +86,7 @@ What needs to happen:
   trace to identify the file set it opens from ~BT, then stage exactly
   that subset.
 
-### 🟧 SIF modifier persistence — assertion landed, root cause TBD
+### 🟧 SIF modifier persistence — assertion landed, root cause TBD — *pending-obsolete by FiraDisk pivot (winnt.sif lives inside ISO; no triple-copy)*
 
 **Status (2026-05-20):** post-write + post-staging assertions added in
 `pipeline::windows_xp_sif::verify_usb_boot_mods_persisted` and
@@ -88,7 +116,7 @@ diagnostic artefact and this item closes.
 Deleted along with its tests. `build_bootsect_dat` remains in use as
 the PBR-patch fallback for the `--boot-record=ms-sys` path; not dead.
 
-### 🟧 boot.ini's 2nd entry hardcodes rdisk(1)
+### 🟧 boot.ini's 2nd entry hardcodes rdisk(1) — *pending-obsolete by FiraDisk pivot (no boot.ini on USB; GRUB4DOS handles boot)*
 
 `pipeline::xp_staging::BOOT_INI` second entry is
 `multi(0)disk(0)rdisk(1)partition(1)\WINDOWS="2nd, GUI mode setup"`.
@@ -120,7 +148,7 @@ What needs to happen:
 - Test with 32 KiB clusters (omit `-c 8`) to see if status 18 returns.
 - If yes, document the precise failure mode. If no, remove `-c 8`.
 
-### 🟧 MBR_WIN7 used for XP mode based on "side effects" never proved
+### 🟧 MBR_WIN7 used for XP mode based on "side effects" never proved — *pending-obsolete by FiraDisk pivot (mkmsbr writes GRUB4DOS MBR, this question moot)*
 
 `pipeline::windows_xp::write_mbr_sector` uses `build_mbr_win7` instead
 of `build_mbr_xp`, based on the theory that MBR_WIN7's register-state

@@ -36,11 +36,26 @@ pub fn generate_minimal() -> String {
         "[Data]",
         "    MsDosInitiated=\"1\"",
         "    Floppyless=\"1\"",
-        // [Unattended] must be present (even empty) to suppress XP's
-        // F8/Recovery Console prompt at the start of GUI-mode setup —
-        // per RMPrepUSB tutorial 102.
+        // AutoPartition=0 is Microsoft's documented default but we set
+        // it explicitly because empirical results say setupdd's "default"
+        // here is unreliable when the rest of winnt.sif suggests
+        // unattended-ish intent. 0 = show the partitioner UI; 1 = pick
+        // the first free partition.
+        "    AutoPartition=0",
         "",
+        // The [Unattended] section's `unused=unused` placeholder is the
+        // canonical USB_MultiBoot / ruo91 pattern (see
+        // github.com/ruo91/USB_MultiBoot/blob/master/USB_MultiBoot_10/
+        // makebt/winnt_rec.sif). An EMPTY [Unattended] section is parsed
+        // by setupdd as "unattended mode = on with all defaults", which
+        // skips the partitioner UI and lets setupdd auto-pick the install
+        // target as the first INT 13h hard disk (= the USB stick itself
+        // on BIOSes that enumerate USB at 0x80, e.g. the Dell E6410).
+        // The placeholder key keeps the section non-empty so setupdd
+        // doesn't take the unattended path. Removing the section entirely
+        // makes XP's F8/Recovery Console prompt fire — we want neither.
         "[Unattended]",
+        "    unused=unused",
         "",
         "[SetupParams]",
         // Runs at the end of text-mode setup, before the GUI-mode reboot.
@@ -184,8 +199,12 @@ mod tests {
         let s = generate_minimal();
         assert!(s.contains("[Data]"));
         assert!(s.contains("MsDosInitiated=\"1\""));
-        // Empty [Unattended] section is required to suppress F8 prompt.
+        assert!(s.contains("AutoPartition=0"));
+        // [Unattended] section is non-empty (unused=unused placeholder)
+        // so setupdd doesn't take the auto-pick-first-disk path. See
+        // generate_minimal() for the full story.
         assert!(s.contains("[Unattended]"));
+        assert!(s.contains("unused=unused"));
         assert!(s.contains("[SetupParams]"));
         assert!(s.contains("UserExecute = \"ren_fold.cmd\""));
         assert!(s.contains("[GuiRunOnce]"));

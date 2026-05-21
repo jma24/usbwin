@@ -106,8 +106,7 @@ pub fn run(plan: &WritePlan, info: &DeviceInfo, config: &Config) -> Result<()> {
             std::fs::remove_dir_all(&path)
                 .with_context(|| format!("removing {}", path.display()))?;
         } else if path.is_file() {
-            std::fs::remove_file(&path)
-                .with_context(|| format!("removing {}", path.display()))?;
+            std::fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;
         }
     }
     println!("usbwin: trimmed ISO-root extras (DOCS/DOTNETFX/VALUEADD/SUPPORT/etc, ~500 MB)");
@@ -141,16 +140,19 @@ pub fn run(plan: &WritePlan, info: &DeviceInfo, config: &Config) -> Result<()> {
         .context("staging \\WIPE.DAT (disk-wipe bootsector)")?;
     println!("usbwin: staged \\WIPE.DAT (wipe-bootsect, 512 bytes)");
 
-    // Move \I386\ → \$WIN_NT$.~BT\ via FAT32 directory-entry rename
-    // (instant, no I/O). Setupldr launched via BOOTSECT.DAT chainload
-    // reads from ~BT; renaming is cheaper than the ~580 MB ditto we
-    // used to do. setupdd reads HIVE*.INF and other non-FloppyFiles
-    // entries from this directory too, so we mirror the full I386 set
-    // here (a slim DOSNET-based subset was tried 2026-05-20 and produced
-    // PROCESS1_INITIALIZATION_FAILED 0x6B / 0xC000003A at smss-init).
-    xp_staging::move_i386_to_bt(&usb_mount)
-        .context("renaming I386 → $WIN_NT$.~BT")?;
-    println!("usbwin: renamed \\I386\\ → \\$WIN_NT$.~BT\\ (FAT32 rename, no I/O)");
+    // Replicate \I386\ into \$WIN_NT$.~BT\ via ditto. \I386\ STAYS at
+    // the partition root — GUI-mode XP setup walks every drive letter
+    // looking for \I386\ sentinel files (setupreg.hiv, layout.inf)
+    // when its primary source-discovery path (\$WIN_NT$.~LS\I386\)
+    // is unavailable post-text-mode, which happens because ren_fold.cmd
+    // renames ~LS to WIN_NT.LS at the text→GUI transition. A rename-
+    // not-replicate variant was tried 2026-05-20 (commit 8f68b44) and
+    // looked correct through text-mode but bricked GUI-mode setup
+    // into the "Insert the CD" prompt loop. Reverted — see
+    // xp_staging::replicate_i386_to_bt for the full story.
+    println!("usbwin: replicating \\I386\\ → \\$WIN_NT$.~BT\\ (~580 MB, fast via ditto)…");
+    xp_staging::replicate_i386_to_bt(&usb_mount).context("replicating I386 → $WIN_NT$.~BT")?;
+    println!("usbwin: replicated \\I386\\ → \\$WIN_NT$.~BT\\");
 
     // Stage `\$WIN_NT$.~LS\I386\` (the GUI-mode setup source) and place
     // the canonical ren_fold.cmd / undoren.cmd rename scripts inside it.
@@ -160,8 +162,7 @@ pub fn run(plan: &WritePlan, info: &DeviceInfo, config: &Config) -> Result<()> {
     // appears when GUI-mode can't find its source on a removable drive.
     // Sources from ~BT (= the renamed \I386\) since they're byte-identical.
     println!("usbwin: replicating $WIN_NT$.~BT → $WIN_NT$.~LS\\I386 (~580 MB, fast via ditto)…");
-    xp_staging::stage_ls_from_bt(&usb_mount)
-        .context("staging $WIN_NT$.~LS\\I386 from ~BT")?;
+    xp_staging::stage_ls_from_bt(&usb_mount).context("staging $WIN_NT$.~LS\\I386 from ~BT")?;
     println!("usbwin: staged $WIN_NT$.~LS\\I386 (with ren_fold.cmd, undoren.cmd)");
 
     // Belt-and-suspenders: re-verify the SIF mod persisted in all three
@@ -184,8 +185,7 @@ pub fn run(plan: &WritePlan, info: &DeviceInfo, config: &Config) -> Result<()> {
     // before any processing and works on the same hardware. The MBR's
     // job is OS-agnostic (chainload the active partition's PBR), so
     // using bootrec's MBR for the ms-sys PBR path is correct.
-    diskutil::unmount_disk_force(&bsd_path)
-        .context("force-unmount before PBR write")?;
+    diskutil::unmount_disk_force(&bsd_path).context("force-unmount before PBR write")?;
     match config.boot_record_impl {
         BootRecordImpl::MsSys => {
             let ms_sys = ms_sys.as_ref().expect("ms-sys resolved above");
@@ -238,11 +238,9 @@ pub fn run(plan: &WritePlan, info: &DeviceInfo, config: &Config) -> Result<()> {
     };
 
     // Re-mount to write the file (or to leave it absent), then unmount.
-    diskutil::mount_disk(&bsd_path)
-        .context("re-mount to write BOOTSECT.DAT")?;
-    let usb_mount2 = find_mount_for_label(&plan.label).ok_or_else(|| {
-        anyhow!("re-mounted partition didn't reappear in /Volumes")
-    })?;
+    diskutil::mount_disk(&bsd_path).context("re-mount to write BOOTSECT.DAT")?;
+    let usb_mount2 = find_mount_for_label(&plan.label)
+        .ok_or_else(|| anyhow!("re-mounted partition didn't reappear in /Volumes"))?;
     match bootsect_dat {
         Ok(bytes) => {
             xp_staging::write_bootsect_dat(&usb_mount2, &bytes)
@@ -414,19 +412,18 @@ fn write_unattended(usb_mount: &Path, config: &Config) -> Result<()> {
     };
 
     // For USB-bootstrapped setup, winnt.sif lives at the partition root —
-    // that's where the WinSetupFromUSB recipe puts it (setupldr.bin looks
-    // there first when MsDosInitiated="1"). Also write to I386/ for
-    // belt-and-braces compatibility with stock CD-style setup paths.
+    // that's where setupldr.bin looks first when MsDosInitiated="1" and
+    // where setupdd later reads its copy from \$WIN_NT$.~BT\winnt.sif.
+    //
+    // We deliberately do NOT also write \I386\winnt.sif: that path is
+    // consumed by winnt32.exe (Windows-hosted setup launched from inside
+    // a running Windows), never by text-mode setupldr/setupdd. The old
+    // belt-and-braces duplicate was a confounder — when something went
+    // wrong, two on-disk copies meant uncertainty about which one was
+    // being read. One source of truth.
     let root_dest = usb_mount.join("winnt.sif");
-    std::fs::write(&root_dest, &body)
-        .with_context(|| format!("writing {}", root_dest.display()))?;
+    std::fs::write(&root_dest, body).with_context(|| format!("writing {}", root_dest.display()))?;
     println!("usbwin: wrote {}", root_dest.display());
-
-    let i386 = xp_staging::find_i386_dir(usb_mount)?;
-    let i386_dest = i386.join("winnt.sif");
-    std::fs::write(&i386_dest, body)
-        .with_context(|| format!("writing {}", i386_dest.display()))?;
-    println!("usbwin: wrote {}", i386_dest.display());
     Ok(())
 }
 
@@ -509,11 +506,9 @@ fn copy_iso_contents(iso_mount: &Path, usb_mount: &Path) -> Result<()> {
     let total_files = entries.iter().filter(|e| !e.is_dir).count() as u64;
 
     let multi = MultiProgress::new();
-    let bar_style = ProgressStyle::with_template(
-        "  {prefix:<6} {wide_bar:.cyan/blue} {msg}",
-    )
-    .unwrap()
-    .progress_chars("█▓▒░ ");
+    let bar_style = ProgressStyle::with_template("  {prefix:<6} {wide_bar:.cyan/blue} {msg}")
+        .unwrap()
+        .progress_chars("█▓▒░ ");
     let pb_bytes = multi.add(ProgressBar::new(total_bytes));
     pb_bytes.set_style(bar_style.clone());
     pb_bytes.set_prefix("bytes");
@@ -526,8 +521,7 @@ fn copy_iso_contents(iso_mount: &Path, usb_mount: &Path) -> Result<()> {
     for entry in &entries {
         if entry.is_dir {
             let dest = usb_mount.join(entry.rel.as_path());
-            std::fs::create_dir_all(&dest)
-                .with_context(|| format!("mkdir {}", dest.display()))?;
+            std::fs::create_dir_all(&dest).with_context(|| format!("mkdir {}", dest.display()))?;
         }
     }
 
@@ -592,7 +586,15 @@ fn copy_chunked(
         }
         dest_f.write_all(&buf[..n]).context("write to USB")?;
         *bytes_copied += n as u64;
-        update_messages(pb_bytes, pb_files, *bytes_copied, total_bytes, files_copied, total_files, start);
+        update_messages(
+            pb_bytes,
+            pb_files,
+            *bytes_copied,
+            total_bytes,
+            files_copied,
+            total_files,
+            start,
+        );
     }
     Ok(())
 }
@@ -609,8 +611,16 @@ fn update_messages(
     let elapsed = start.elapsed().as_secs_f64().max(0.01);
     let bps = bytes_copied as f64 / elapsed;
     let fps = files_copied as f64 / elapsed;
-    let bytes_eta = if bps > 0.0 { (total_bytes - bytes_copied) as f64 / bps } else { 0.0 };
-    let files_eta = if fps > 0.0 { (total_files - files_copied) as f64 / fps } else { 0.0 };
+    let bytes_eta = if bps > 0.0 {
+        (total_bytes - bytes_copied) as f64 / bps
+    } else {
+        0.0
+    };
+    let files_eta = if fps > 0.0 {
+        (total_files - files_copied) as f64 / fps
+    } else {
+        0.0
+    };
     let eta = bytes_eta.max(files_eta);
 
     pb_bytes.set_position(bytes_copied);
@@ -647,9 +657,13 @@ fn human_bytes(bytes: u64) -> String {
 }
 
 fn human_secs(s: u64) -> String {
-    if s >= 3600 { format!("{}h{:02}m", s / 3600, (s % 3600) / 60) }
-    else if s >= 60 { format!("{}m{:02}s", s / 60, s % 60) }
-    else { format!("{}s", s) }
+    if s >= 3600 {
+        format!("{}h{:02}m", s / 3600, (s % 3600) / 60)
+    } else if s >= 60 {
+        format!("{}m{:02}s", s / 60, s % 60)
+    } else {
+        format!("{}s", s)
+    }
 }
 
 struct CopyEntry {
@@ -666,9 +680,7 @@ fn walk_files(root: &Path) -> Result<Vec<CopyEntry>> {
 }
 
 fn walk_recursive(root: &Path, dir: &Path, out: &mut Vec<CopyEntry>) -> Result<()> {
-    for entry in std::fs::read_dir(dir)
-        .with_context(|| format!("read_dir {}", dir.display()))?
-    {
+    for entry in std::fs::read_dir(dir).with_context(|| format!("read_dir {}", dir.display()))? {
         let entry = entry?;
         let path = entry.path();
         let rel = path
@@ -677,10 +689,18 @@ fn walk_recursive(root: &Path, dir: &Path, out: &mut Vec<CopyEntry>) -> Result<(
             .to_path_buf();
         let metadata = entry.metadata()?;
         if metadata.is_dir() {
-            out.push(CopyEntry { rel: rel.clone(), size: 0, is_dir: true });
+            out.push(CopyEntry {
+                rel: rel.clone(),
+                size: 0,
+                is_dir: true,
+            });
             walk_recursive(root, &path, out)?;
         } else if metadata.is_file() {
-            out.push(CopyEntry { rel, size: metadata.len(), is_dir: false });
+            out.push(CopyEntry {
+                rel,
+                size: metadata.len(),
+                is_dir: false,
+            });
         }
     }
     Ok(())

@@ -34,7 +34,11 @@ pub enum Error {
     BootRecord(String),
 
     #[error("verification failed at offset {offset}: expected {expected:02x?}, got {actual:02x?}")]
-    VerifyMismatch { offset: u64, expected: Vec<u8>, actual: Vec<u8> },
+    VerifyMismatch {
+        offset: u64,
+        expected: Vec<u8>,
+        actual: Vec<u8>,
+    },
 
     #[error("unsupported boot mode for this ISO: {0}")]
     UnsupportedMode(String),
@@ -99,6 +103,7 @@ impl BootRecordImpl {
 pub enum ModeRequest {
     Auto,
     Windows,
+    WindowsNtXp,
     WindowsXp,
     IsolinuxLinux,
     Hybrid,
