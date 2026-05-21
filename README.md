@@ -2,19 +2,26 @@
 
 **This is the tool Rufus refuses to be.**
 
-A native macOS arm64 CLI for writing bootable USB sticks from any ISO — Windows (7 through 11), Linux/BSD (hybrid or isolinux), or UEFI-only — without Rosetta, without a Windows VM, without Boot Camp Assistant.
+A native macOS arm64 CLI for writing Windows install USB sticks — Windows
+2000, XP, and Windows 7 — without Rosetta, without a Windows VM, without
+Boot Camp Assistant.
 
 ## Status
 
-**Alpha.** Three modes work; the rest are deferred.
+**Alpha.** The Windows 7 and XP paths are hardware-verified. The 1.0 scope
+is Windows 2000/XP/7 with unattended install support and XP/2000-era AHCI
+textmode storage drivers.
 
 | Mode | State |
 |------|-------|
-| Hybrid (Linux/BSD ISO raw write) | ✅ working since v0.1 |
+| Hybrid (Linux/BSD ISO raw write) | ✅ working since v0.1; maintained as a utility path, not part of the v1 Windows scope. |
 | Windows 7+ (BOOTMGR chain) | ✅ hardware-verified on Dell E6410 (2026-05-19) with both `--boot-record=bootrec` (default) and `--boot-record=ms-sys`. Same code path covers Win 8/10/11. |
 | Windows NT/XP (`windows-ntxp`) | ✅ GRUB4DOS + FiraDisk production path hardware-verified end-to-end on Dell E6410 (2026-05-21). |
-| Linux/isolinux | deferred |
-| UEFI-only | deferred |
+| Windows 2000 | 1.0 target; auto-detection exists, install support still pending. |
+| XP/2000 unattended installs | 1.0 target. |
+| XP/2000 AHCI textmode storage | 1.0 target. |
+| Linux/isolinux | deferred; not a v1 goal. |
+| UEFI-only | deferred; not a v1 goal. |
 
 The MBR + FAT32 PBR bytes come from the sibling [`mkmsbr`](https://github.com/jma24/mkmsbr) library (renamed from `bootrec` 2026-05-19) by default, linked in-process — no external `ms-sys` binary required. The legacy `ms-sys` shell-out is still available as `--boot-record=ms-sys` for byte-equality auditing of Win 7 mode. usbwin imports it as `bootrec::*` via a Cargo `package = "mkmsbr"` alias for source-compat.
 
@@ -26,8 +33,11 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the design, [`docs/XP_FIR
 - Rufus is Windows-only.
 - Boot Camp Assistant was removed on Apple Silicon.
 - `dd` works for hybrid ISOs but silently produces a non-bootable Windows USB.
+- Generic ISO writing is already well-served by `dd` and other tools; old
+  Windows installer media is the awkward gap.
 
-There is currently no native macOS arm64 binary that writes a bootable Windows install USB. This is that binary.
+There is currently no native macOS arm64 binary that writes a bootable
+Windows 2000/XP/7 install USB. This is that binary.
 
 ## Install
 
@@ -90,11 +100,11 @@ sudo usbwin winxp_sp3.iso /dev/rdisk6 --type=windows-ntxp
 usbwin --dry-run Win7_SP1.iso /dev/disk8     # no sudo needed; emits bytes to /tmp
 ```
 
-For NT5-class XP/2003 media, `--type=auto` resolves to the newer
-`windows-ntxp` GRUB4DOS + FiraDisk path. `--type=windows-xp` remains
+For NT5-class Windows 2000/XP/2003 media, `--type=auto` resolves to the
+newer `windows-ntxp` GRUB4DOS + FiraDisk path. `--type=windows-xp` remains
 accepted as a compatibility alias for `windows-ntxp`. Windows 2000 media is
 recognized as NT5-class by auto-detect, but Win2k install support is still
-backlog work.
+1.0 work.
 
 ## Safety
 

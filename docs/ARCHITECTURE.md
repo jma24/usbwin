@@ -53,9 +53,14 @@ The Windows-mode pipelines have their own submodules under
    - QEMU smoke: write to a disk image, boot it under qemu-system-i386, scrape serial output. *(Lives in bootrec, not usbwin — bootrec is where the byte production happens; usbwin's wrapper is what the golden tests cover.)*
    - Hardware (manual): the scenarios in [`HARDWARE_TESTS.md`](HARDWARE_TESTS.md), run before each release.
 
-## MVP target
+## Release targets
 
-**Windows 7 install USB.** The Win 7 boot chain (`bootmgr` loaded by a FAT32 PBR, with `sources/install.wim` carrying the installer payload) is shared verbatim with Win 8, 10, and 11 — so one carefully-built code path covers all four versions of Windows.
+**v1.0 is Windows 2000/XP/7.** usbwin is intentionally not a generic boot
+loader for the first stable release. The Windows 7 boot chain (`bootmgr`
+loaded by a FAT32 PBR, with `sources/install.wim` carrying the installer
+payload) is the NT6 path. The NT5 path covers Windows 2000 and XP through
+GRUB4DOS + FiraDisk, with unattended installs and AHCI/textmode storage as
+1.0 requirements.
 
 **Windows XP is now handled by `windows-ntxp`.** XP predates the
 `bootmgr` + `install.wim` design, so usbwin uses GRUB4DOS + FiraDisk instead of the
@@ -68,9 +73,9 @@ Staging:
 
 - **v0.1** — hybrid mode (raw write for Linux/BSD ISOs). Ships the safety chokepoint, the verify pass, the macOS device layer. *Done.*
 - **v0.2** — Windows 7+ mode end-to-end via `ms-sys` shell-out. Full Windows install USB pipeline. *Done; hardware-verified on Dell E6410.*
-- **v0.3** — Windows XP mode via GRUB4DOS + FiraDisk. *Implemented; production hardware verification in progress.*
-- **v1.0** — `bootrec` library replaces the ms-sys shell-out as the default boot-record source. usbwin's Windows 7+ pipeline links bootrec in-process; ms-sys becomes an opt-in `--boot-record=ms-sys` fallback. *Done for Win 7 (hardware-verified 2026-05-19).*
-- **later** — Isolinux Linux mode and UEFI-only mode.
+- **v0.3** — Windows XP mode via GRUB4DOS + FiraDisk. *Implemented and hardware-verified on Dell E6410.*
+- **v1.0** — Windows 2000/XP/7 release: Win2k install support, XP/2000 unattended install support, XP/2000 AHCI/textmode storage support, release packaging, and hardened diagnostics. The `bootrec`/mkmsbr in-process backend is already the default for Win 7; `ms-sys` remains an opt-in audit fallback.
+- **later** — Isolinux Linux mode, generic UEFI-only mode, broader Windows 8+ release claims, rescue disks, and GUI/frontend work.
 
 ## The pipeline
 

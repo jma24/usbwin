@@ -6,6 +6,16 @@ not treat those files as the current work queue.
 
 Last updated: 2026-05-21.
 
+## v1.0 scope
+
+usbwin 1.0 is a focused Windows installer USB tool, not a generic boot
+loader. The target matrix is Windows 2000, Windows XP, and Windows 7, with
+unattended install support and NT5-era AHCI/textmode storage support.
+Linux/isolinux, generic UEFI-only media, Windows 8+, and broad rescue-disk
+coverage are useful follow-up work, but they are not 1.0 blockers. Generic
+ISO writing is already covered by tools like `dd`; the 1.0 value is making
+old Windows installers work reliably from macOS.
+
 ## Release blockers
 
 None.
@@ -64,11 +74,11 @@ Done means:
 - Add a `-v` or `RUST_LOG=usbwin=debug` workflow that shows every file
   operation during a burn.
 
-## Compatibility backlog
+## Before v1.0
 
-### Windows 2000 support
+### Windows 2000 install support
 
-Status: backlog.
+Status: 1.0 blocker.
 
 `usbwin-iso` recognizes Windows 2000-style NT5 install media so
 `--type=auto` can classify it as NT5-class, but hardware testing on
@@ -79,11 +89,12 @@ Done means:
 - Capture the exact Win2k failure mode from hardware or QEMU.
 - Decide whether GRUB4DOS + FiraDisk can support Win2k with compatibility
   changes or needs a separate `windows-2000` mode.
-- Add an explicit support matrix row only after there is a green path.
+- Add an explicit support matrix row after there is a green path.
+- Hardware-verify Windows 2000 install through first desktop boot.
 
 ### XP AHCI/SATA/RAID textmode storage support
 
-Status: backlog.
+Status: 1.0 blocker.
 
 XP SP3 does not include broad inbox AHCI support. The current Dell E6410
 test path requires BIOS SATA set to ATA mode.
@@ -94,6 +105,60 @@ Done means:
   directory or a Dell E6410 preset.
 - Ensure setup loads both the virtual-CD driver and the internal-disk
   storage driver.
+- Hardware-verify XP setup sees and installs to the internal disk with BIOS
+  SATA mode set to AHCI.
+
+### XP/2000 unattended support for FiraDisk ISO path
+
+Status: 1.0 blocker.
+
+Done means:
+- Generate a derived ISO containing `I386\WINNT.SIF`; never mutate the
+  input ISO.
+- Support product key, regional/timezone defaults, computer name, admin
+  password policy, EULA acceptance, install mode, and driver-signing policy.
+- Keep manual partitioning by default. Never set `AutoPartition=1` unless
+  the user explicitly opts into destructive full automation.
+- Hardware-verify unattended XP install through first desktop boot.
+
+### Windows 7 release hardening
+
+Status: 1.0 blocker.
+
+Done means:
+- Re-run the Win 7 SP1 hardware test after the XP-path cleanup.
+- Confirm `--type=auto` and explicit `--type=windows` both produce the
+  expected Win 7 boot path.
+- Keep `--boot-record=ms-sys` as an audit fallback, but document the
+  in-process mkmsbr backend as the default release path.
+
+### Release packaging
+
+Status: 1.0 blocker.
+
+Done means:
+- Build signed/notarized macOS release binaries.
+- Remove the local sibling `../mkmsbr` requirement from release builds by
+  using a published crate, vendored dependency, or pinned git dependency.
+- Update README install instructions for users who are not building from a
+  local multi-repo checkout.
+
+### Pipeline error reporting and verbose mode
+
+Status: 1.0 blocker.
+
+The current pipeline has improved top-level context, but hardware/debug
+runs still rely on a mix of stdout progress messages and anyhow contexts.
+Permission errors, FAT32 mount failures, and staged-file copy failures need
+to surface the full error chain cleanly.
+
+Done means:
+- Audit `windows_ntxp.rs`, `windows.rs`, and `diskutil.rs` for contexts that
+  hide the underlying `io::Error` or command stderr.
+- Add a `-v` or `RUST_LOG=usbwin=debug` workflow that shows every file
+  operation during a burn.
+
+## Compatibility backlog
 
 ### WinVBlock and low-RAM fallback
 
@@ -108,17 +173,18 @@ Done means:
 - Add a RAM requirement warning before burning a full RAM-mapped XP ISO.
 - Keep the default path simple unless hardware evidence says otherwise.
 
-### XP unattended support for FiraDisk ISO path
+### Generic Linux/isolinux and UEFI-only modes
 
-Status: backlog after XP production path is green.
+Status: post-1.0.
+
+The codebase still has explicit mode names for isolinux and UEFI-only
+media, but v1 is Windows-focused. Do not spend 1.0 time turning usbwin into
+a generic boot loader.
 
 Done means:
-- Generate a derived ISO containing `I386\WINNT.SIF`; never mutate the
-  input ISO.
-- Support product key, regional/timezone defaults, computer name, admin
-  password policy, EULA acceptance, install mode, and driver-signing policy.
-- Keep manual partitioning by default. Never set `AutoPartition=1` unless
-  the user explicitly opts into destructive full automation.
+- Decide whether to keep the current mode names as future placeholders or
+  hide them from help output until implementation starts.
+- Implement only after the Windows 2000/XP/7 scope is shipped.
 
 ## Cleanup
 
