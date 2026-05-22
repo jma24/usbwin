@@ -29,12 +29,8 @@ The Windows-mode pipelines have their own submodules under
 `crates/usbwin/src/pipeline/`:
 
 - `boot_records` — pure byte-producing wrappers around mkmsbr
-  (`build_mbr_win7`, `build_mbr_xp`, `splice_pbr_bootmgr`).
-  Has golden tests against checked-in `.bin`
-  fixtures so any mkmsbr byte drift trips CI immediately.
-- `fat32` — minimal read-only FAT32 walker that finds a file's LBA
-  list. Kept for boot-record diagnostics and possible future filesystem
-  verification.
+  (`build_mbr_win7`, `splice_pbr_bootmgr`). Has golden tests against
+  checked-in `.bin` fixtures so any mkmsbr byte drift trips CI immediately.
 - `windows_ntxp` — the active NT5/XP path. It writes the chenall GRUB4DOS
   `grldr.mbr` boot track, formats one active FAT32 partition, stages
   `GRLDR`, `menu.lst`, `XP.ISO`, and `FIRADISK.IMA`, then boots XP setup

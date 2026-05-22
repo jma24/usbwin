@@ -22,26 +22,14 @@ const SECTOR_SIZE: u64 = 512;
 
 /// Win 7+ MBR (sector 0 of the whole disk). 512 bytes.
 /// Includes boot code, disk signature, partition table, and 0xAA55 signature.
+///
+/// `windows-ntxp` mode does not call this — it writes the GRUB4DOS
+/// `grldr.mbr` boot track instead.
 pub fn build_mbr_win7(disk_size_bytes: u64) -> Result<Vec<u8>> {
     let disk_sectors = disk_size_bytes / SECTOR_SIZE;
     bootrec::mbr_win7(disk_sectors)
         .map(|arr| arr.to_vec())
         .map_err(|e| anyhow!("bootrec::mbr_win7: {e}"))
-}
-
-/// Win 2000/XP/2003 MBR (sector 0 of the whole disk). 512 bytes.
-/// Layout matches `build_mbr_win7` but the boot code is the XP-era variant.
-///
-/// Currently unused by the pipeline — XP mode also writes MBR_WIN7 because
-/// MBR is OS-agnostic and MBR_WIN7 has end-to-end hardware verification on
-/// the Dell E6410. Kept (and tested) so we can swap back via a one-line
-/// change if MBR_XP ever proves preferable on some target.
-#[allow(dead_code)]
-pub fn build_mbr_xp(disk_size_bytes: u64) -> Result<Vec<u8>> {
-    let disk_sectors = disk_size_bytes / SECTOR_SIZE;
-    bootrec::mbr_xp(disk_sectors)
-        .map(|arr| arr.to_vec())
-        .map_err(|e| anyhow!("bootrec::mbr_xp: {e}"))
 }
 
 /// Win 7+ multi-sector FAT32 PBR (BOOTMGR-loading). Takes the formatter's
@@ -72,10 +60,10 @@ pub fn ensure_embedded_blobs() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    //! Golden tests. The four functions above (`build_mbr_win7`,
-    //! `build_mbr_xp`, `splice_pbr_bootmgr`) are usbwin's
-    //! entire output surface for boot-record bytes — any bootrec bump that
-    //! changes them is caught here, before the next hardware test.
+    //! Golden tests. The functions above (`build_mbr_win7`,
+    //! `splice_pbr_bootmgr`) are usbwin's entire output surface for
+    //! boot-record bytes — any bootrec bump that changes them is caught
+    //! here, before the next hardware test.
     //!
     //! Goldens live at `tests/golden/` and are committed. Bootstrap them
     //! (or update after an intentional bootrec change) with:
@@ -197,13 +185,6 @@ mod tests {
         let mbr = build_mbr_win7(DISK_SIZE_64GB).unwrap();
         assert_eq!(mbr.len(), 512, "MBR is exactly one sector");
         compare_or_update("mbr_win7_64gb.bin", &mbr);
-    }
-
-    #[test]
-    fn mbr_xp_matches_golden() {
-        let mbr = build_mbr_xp(DISK_SIZE_64GB).unwrap();
-        assert_eq!(mbr.len(), 512, "MBR is exactly one sector");
-        compare_or_update("mbr_xp_64gb.bin", &mbr);
     }
 
     #[test]
