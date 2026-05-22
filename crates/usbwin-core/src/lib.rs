@@ -125,6 +125,7 @@ pub enum ModeRequest {
     Auto,
     Windows,
     WindowsNtXp,
+    Windows2000,
     IsolinuxLinux,
     Hybrid,
     UefiOnly,

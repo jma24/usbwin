@@ -37,116 +37,156 @@ Completed:
   staged GRUB4DOS/FiraDisk files and no `\WINDOWS` install tree.
 - `HARDWARE_TESTS.md` row 7 was updated from pending to green.
 
-## Before v0.3
-
 ### Release docs for `windows-ntxp`
 
-The user-facing docs should describe the current product shape, not the
-recovery process.
+Status: done 2026-05-21.
 
-Done means:
-- README support matrix is current.
+- README support matrix reflects the FiraDisk path.
 - `ARCHITECTURE.md` points at `XP_FIRADISK_PIPELINE.md` for XP design.
-- `V0.3_WINDOWS_XP.md` is archived as a short historical pointer.
-- Recovery docs are not part of the main README navigation.
+- `V0.3_WINDOWS_XP.md` is a short archival pointer.
+- `XP_BOOT_INI.md` is a short archival pointer (FiraDisk path replaced the
+  boot.ini chain).
+- README links to `ARCHITECTURE.md`, `XP_FIRADISK_PIPELINE.md`, and
+  `BACKLOG.md` only — recovery/regression docs are not in the main nav.
 
 ### Burn transcript and hardware checklist
 
-The XP release checklist should be repeatable from a terminal transcript.
+Status: done 2026-05-21.
 
-Done means:
-- Document the expected `usbwin` confirmation output for XP SP3 media.
-- Document the GRUB4DOS boot choices: entry 1 for text-mode setup, entry 2
-  for GUI-mode continuation after reboot.
-- Keep the boot-track readback command and expected 64 GB SanDisk MBR entry
-  in `HARDWARE_TESTS.md`.
-
-### Pipeline error reporting and verbose mode
-
-The current pipeline has improved top-level context, but hardware/debug
-runs still rely on a mix of stdout progress messages and anyhow contexts.
-Permission errors, FAT32 mount failures, and staged-file copy failures need
-to surface the full error chain cleanly.
-
-Done means:
-- Audit `windows_ntxp.rs`, `windows.rs`, and `diskutil.rs` for contexts that
-  hide the underlying `io::Error` or command stderr.
-- Add a `-v` or `RUST_LOG=usbwin=debug` workflow that shows every file
-  operation during a burn.
+- `HARDWARE_TESTS.md` has the expected `usbwin` confirmation output for XP
+  SP3 media.
+- The GRUB4DOS boot choices (entry 1 text-mode, entry 2 GUI-mode
+  continuation) and reboot flow are documented in the boot flow section.
+- The boot-track readback command and expected 64 GB SanDisk MBR entry are
+  documented alongside row 7.
 
 ## Before v1.0
 
 ### Post-FiraDisk-migration cleanup
 
-Status: 1.0 blocker. Do these before Win2k work so the XP path is on
-clean ground first.
+Status: code/docs pass done 2026-05-21. Only the FAT32 cluster-size
+hardware question (see Cleanup below) remains.
 
 The FiraDisk migration replaced the old NTLDR / boot.ini / I386-staging
-pipeline with GRUB4DOS + RAM-mapped ISO, but several pieces of the old
-path are still in the tree and several memory/docs notes are stale.
+pipeline with GRUB4DOS + RAM-mapped ISO. The leftover NTLDR-era code and
+docs have been removed:
 
-Done means:
-- Delete the empty `crates/usbwin/src/pipeline/xp_assets/` directory.
-- Decide the fate of `crates/usbwin/src/pipeline/fat32.rs` (entire module
-  is `#![allow(dead_code)]`; it was the FAT32 walker that fed the never-
-  shipped bootrec `build_xp_setup_chain_bootsect` LDR$ loader). Either
-  delete the module and its tests, or move it to a clearly-labelled
-  experimental location with a written reason to keep it.
-- Delete `boot_records.rs::build_mbr_xp` and `tests/golden/mbr_xp_64gb.bin`
-  if confirmed unused (XP now writes GRUB4DOS MBR, not MBR_XP or
-  MBR_WIN7), or rewrite the doc comment so it reflects current reality.
-- Fix the stale comment block at `boot_records.rs:35` that claims "XP mode
-  also writes MBR_WIN7"; XP mode writes GRLDR_MBR.
-- Audit `docs/XP_BOOT_INI.md` and similar boot.ini-era documents; mark
-  archival or delete. The current XP boot chain is in
-  `docs/XP_FIRADISK_PIPELINE.md`.
-- Resolve the `-c 8` 4 KiB FAT32 cluster forcing in
-  `diskutil::newfs_msdos_fat32` (also listed under Cleanup below).
+- Empty `crates/usbwin/src/pipeline/xp_assets/` directory deleted. ✅
+- `crates/usbwin/src/pipeline/fat32.rs` deleted (was the FAT32 walker for
+  the never-shipped `build_xp_setup_chain_bootsect` LDR$ loader). ✅
+- `boot_records.rs::build_mbr_xp` and `tests/golden/mbr_xp_64gb.bin`
+  deleted. XP mode writes the GRUB4DOS `grldr.mbr` boot track; no MBR_XP
+  or MBR_WIN7 is involved. ✅
+- `boot_records.rs` doc comments updated to reflect that the Win 7 path
+  writes MBR_WIN7 and the XP path writes GRLDR_MBR. ✅
+- `docs/XP_BOOT_INI.md` reduced to a short archival pointer. ✅
 
 ### Windows 2000 install support
 
-Status: 1.0 blocker.
+Status: 1.0 blocker. Scoping in `WIN2K_SVBUS.md`.
 
 `usbwin-iso` recognizes Windows 2000-style NT5 install media so
 `--type=auto` can classify it as NT5-class, but hardware testing on
-2026-05-21 showed that this is not enough for a working Windows 2000
-install. Do not claim Win2k support in user-facing docs or release notes.
+2026-05-21 showed Win2k reaches text-mode setup and then BSODs (stop code
+not captured). Do not claim Win2k support in user-facing docs or release
+notes.
+
+Web research on 2026-05-21 established the root cause and the
+implementation direction:
+
+- **FiraDisk does not support Windows 2000** (XP/2003+ only; confirmed via
+  reboot.pro thread 8168 and the FiraDisk changelog on thread 8804). The
+  most likely BSOD is `STOP 0x7B INACCESSIBLE_BOOT_DEVICE` because
+  FiraDisk's SCSI miniport never enumerates under NT 5.0, so setupldr
+  loses the boot volume at the real-mode → protected-mode handoff.
+- **SVBus** (the grub4dos-org successor to WinVBlock, github.com/grub4dos/
+  svbus) is the canonical Win2k-compatible swap-in. Its ReadMe documents
+  a verbatim Win2k SP4 install recipe and the GRUB4DOS chain shape is
+  nearly identical to the current XP `FIRADISK.IMA` path.
+- USB controller drivers (`usbehci.sys`/`usbohci.sys`) **probably don't
+  matter** for the RAM-mapped-ISO architecture (follow-up research:
+  GRUB4DOS `map --mem` puts the ISO in RAM and INT 13h is serviced from
+  the buffer, so setup never reads from USB post-handoff). The MSFN 147119
+  BSOD is specific to WinSetupFromUSB's sector-mapped path. **Not
+  validated on hardware yet.** Conclusions above (FiraDisk-vs-Win2k root
+  cause, SVBus direction, USB-driver irrelevance) all need confirmation
+  via the diagnostic capture step before code work begins.
+
+Implementation direction: add a separate `windows-2000` mode that swaps
+`FIRADISK.IMA` for `svbus.ima` and ships a Win2k `txtsetup.oem` template.
+Keep the verified XP path on FiraDisk (zero regression risk).
 
 Done means:
-- Capture the exact Win2k failure mode from hardware or QEMU.
-- Decide whether GRUB4DOS + FiraDisk can support Win2k with compatibility
-  changes or needs a separate `windows-2000` mode.
-- Add an explicit support matrix row after there is a green path.
-- Hardware-verify Windows 2000 install through first desktop boot.
+- Capture the actual stop code on the next E6410 run (photograph the
+  `*** STOP: 0x...` line; add `/sos` to setupldr to print each driver as
+  it loads). This validates the FiraDisk hypothesis before any code work.
+- Vendor SVBus into the repo with provenance pinned to a specific
+  grub4dos/svbus release.
+- Build the `windows-2000` mode: GRUB4DOS chain reuses the XP shape,
+  staged floppy carries SVBus instead of FiraDisk, F6 `txtsetup.oem`
+  references "SVBus Virtual SCSI Host Adapter x86".
+- Only reintroduce the `txtsetup.sif` USB-driver patch if SVBus alone
+  doesn't get to first desktop boot.
+- Hardware-verify Windows 2000 install through first desktop boot on the
+  E6410.
+- Add an explicit support matrix row after the green path lands.
 
 ### XP AHCI/SATA/RAID textmode storage support
 
 Status: 1.0 blocker.
 
 XP SP3 does not include broad inbox AHCI support. The current Dell E6410
-test path requires BIOS SATA set to ATA mode.
+test path requires BIOS SATA set to ATA mode. Web research (2026-05-21)
+established the driver direction and minimum textmode driver set; not
+yet hardware-validated.
+
+Research findings (need hardware validation):
+- Without an Intel `iaStor.sys` / `iaAHCI.inf` F6 driver, AHCI-mode setup
+  will not see the HDD → expected `STOP 0x7B INACCESSIBLE_BOOT_DEVICE`
+  pointed at the internal disk rather than the install medium.
+- Canonical driver for the E6410 (ICH9M-E, VEN_8086 DEV_3B29):
+  Intel Matrix Storage Manager F6 floppy, `iaStor` family. Dell still
+  hosts a working build under the Latitude E6410 support pages
+  (driver ID `rr1rk`, IMSM 9.6.4.1002 A00). Intel pulled their own
+  listings years ago.
+- USB controller drivers are NOT required for the usbwin RAM-mapped
+  chain (FiraDisk/SVBus take over INT 13h from RAM after `map --mem`).
+- USB 3.0 forward-compat is a docs problem, not a code problem — users
+  on newer machines need to plug into a USB 2.0 port and/or enable
+  legacy USB support in BIOS. Document this rather than coding around
+  it.
 
 Done means:
 - Start narrow with Dell E6410 Intel SATA AHCI.
-- Add an explicit experimental flag for a supplied F6 floppy/driver
-  directory or a Dell E6410 preset.
-- Ensure setup loads both the virtual-CD driver and the internal-disk
-  storage driver.
-- Hardware-verify XP setup sees and installs to the internal disk with BIOS
-  SATA mode set to AHCI.
+- Add an explicit experimental flag (`--ahci-driver-dir <path>`) that
+  consumes a vendor-shaped F6 folder (`txtsetup.oem` + `iaStor.sys` +
+  `iaAHCI.inf` + `iaStor.cat`). Do not bundle the Intel driver — user
+  supplies it.
+- Stage the AHCI driver alongside FiraDisk so text-mode setup loads
+  both the ramdisk filter and the AHCI miniport. Mechanism (single
+  merged `txtsetup.oem` vs two virtual floppies) TBD during
+  implementation — both are documented in the literature.
+- Hardware-verify XP setup sees and installs to the internal disk with
+  BIOS SATA mode set to AHCI on the E6410.
+- README + HARDWARE_TESTS note the USB 2.0 port + legacy-USB-support
+  requirements for non-reference hardware.
 
-### XP/2000 unattended support for FiraDisk ISO path
+### XP unattended support for FiraDisk ISO path
 
-Status: 1.0 blocker.
+Status: done 2026-05-21. Implementation landed in commit 22f00ec and was
+hardware-verified end-to-end on the Dell E6410.
 
-Done means:
-- Generate a derived ISO containing `I386\WINNT.SIF`; never mutate the
-  input ISO.
-- Support product key, regional/timezone defaults, computer name, admin
-  password policy, EULA acceptance, install mode, and driver-signing policy.
-- Keep manual partitioning by default. Never set `AutoPartition=1` unless
-  the user explicitly opts into destructive full automation.
-- Hardware-verify unattended XP install through first desktop boot.
+- `--unattended` injects `I386\WINNT.SIF` into the staged `XP.ISO` and
+  `A:\WINNT.SIF` into the staged `FIRADISK.IMA`; the input ISO is never
+  mutated. ✅
+- Supports product key, computer name, admin password policy, timezone,
+  EULA acceptance, install mode, and driver-signing policy. ✅
+- Keeps manual partitioning by default (`AutoPartition=0`). ✅
+- Hardware-verified: unattended XP install reaches first desktop boot on
+  the E6410 with a real product key. ✅
+
+Win2k unattended falls under the Windows 2000 install item below — same
+SIF mechanics but verified against a Win2k ISO.
 
 ### Windows 7 release hardening
 

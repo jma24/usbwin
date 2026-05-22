@@ -17,8 +17,12 @@
 //! - UefiOnly: contains `EFI/BOOT/BOOTX64.EFI` (or other UEFI loader path)
 //!   AND lacks an MBR signature.
 //!
-//! Windows 2000 media is recognized as NT5-class for auto-detect purposes,
-//! but install support remains backlog work.
+//! Windows 2000 media (NT 5.0) is split out from XP/2003 (NT 5.1/5.2)
+//! using the WIN51/WIN52 root-marker files that Microsoft has shipped on
+//! XP-and-later install media since XP launched. Presence = XP/2003 →
+//! `WindowsNtXp`; absence (but still NT5-class) = Win2k →
+//! `Windows2000`. The two modes share the GRUB4DOS chain shape but
+//! differ in the textmode ramdisk driver (FiraDisk vs SVBus).
 
 use std::collections::BTreeSet;
 use std::fs::File;
@@ -52,7 +56,11 @@ pub fn classify(path: &Path) -> Result<BootMode> {
     let entries = iso.collect_paths()?;
 
     if is_nt5_install_media(&entries) {
-        return Ok(BootMode::WindowsNtXp);
+        return Ok(if has_win51_or_win52_marker(&entries) {
+            BootMode::WindowsNtXp
+        } else {
+            BootMode::Windows2000
+        });
     }
     if has(&entries, "BOOTMGR")
         && (has(&entries, "SOURCES/INSTALL.WIM") || has(&entries, "SOURCES/INSTALL.ESD"))
@@ -73,14 +81,15 @@ fn is_nt5_install_media(entries: &BTreeSet<String>) -> bool {
     has(entries, "I386/TXTSETUP.SIF")
         && (has(entries, "I386/SETUPLDR.BIN")
             || has(entries, "I386/NTDETECT.COM")
-            || entries.iter().any(|p| {
-                p == "WIN51"
-                    || p.starts_with("WIN51")
-                    || p == "WIN52"
-                    || p.starts_with("WIN52")
-            }))
+            || has_win51_or_win52_marker(entries))
         && !has(entries, "BOOTMGR")
         && !entries.iter().any(|p| p.starts_with("SOURCES/"))
+}
+
+fn has_win51_or_win52_marker(entries: &BTreeSet<String>) -> bool {
+    entries.iter().any(|p| {
+        p == "WIN51" || p.starts_with("WIN51") || p == "WIN52" || p.starts_with("WIN52")
+    })
 }
 
 fn has(entries: &BTreeSet<String>, path: &str) -> bool {
@@ -243,6 +252,20 @@ mod tests {
             ("I386/NTDETECT.COM", false),
         ]);
         let path = write_temp_iso("win2000", &iso);
+        assert_eq!(classify(&path).unwrap(), BootMode::Windows2000);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn classifies_nt5_windows_2003_media_with_win52_marker_as_ntxp() {
+        let iso = synthetic_iso(&[
+            ("I386", true),
+            ("I386/TXTSETUP.SIF", false),
+            ("I386/SETUPLDR.BIN", false),
+            ("I386/NTDETECT.COM", false),
+            ("WIN52", false),
+        ]);
+        let path = write_temp_iso("win2003", &iso);
         assert_eq!(classify(&path).unwrap(), BootMode::WindowsNtXp);
         let _ = fs::remove_file(path);
     }

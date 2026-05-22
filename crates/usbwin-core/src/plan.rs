@@ -17,10 +17,17 @@ pub enum BootMode {
     /// MBR + active FAT32 + bootmgr-loading PBR + file copy. Win 7 through 11.
     Windows,
 
-    /// NT-family XP/2000-style install USB using GRUB4DOS + FiraDisk:
+    /// NT-family XP/2003-style install USB using GRUB4DOS + FiraDisk:
     /// RAM-map the original ISO as a virtual CD, expose it to protected-mode
     /// setup with FiraDisk, and drive-swap so the internal HDD is first.
     WindowsNtXp,
+
+    /// Windows 2000 (NT 5.0) install USB. Same GRUB4DOS + RAM-mapped ISO
+    /// chain as [`WindowsNtXp`], but with SVBus in place of FiraDisk —
+    /// FiraDisk's SCSI miniport collides with the NT 5.0 storage stack
+    /// (0x7B INACCESSIBLE_BOOT_DEVICE / 0xC0000034). See
+    /// docs/WIN2K_SVBUS.md.
+    Windows2000,
 
     /// MBR + active FAT32 + syslinux boot code + file copy. Older Linux ISOs
     /// that aren't hybrid (e.g. some isolinux-only distros).
@@ -36,6 +43,7 @@ impl BootMode {
             BootMode::Hybrid => "hybrid",
             BootMode::Windows => "windows",
             BootMode::WindowsNtXp => "windows-ntxp",
+            BootMode::Windows2000 => "windows-2000",
             BootMode::IsolinuxLinux => "linux",
             BootMode::UefiOnly => "uefi",
         }

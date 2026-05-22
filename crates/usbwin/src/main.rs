@@ -117,6 +117,8 @@ enum ModeArg {
     Windows,
     #[value(name = "windows-ntxp", alias = "windows-xp")]
     WindowsNtXp,
+    #[value(name = "windows-2000", alias = "win2k")]
+    Windows2000,
     Linux,
     Hybrid,
     Uefi,
@@ -128,6 +130,7 @@ impl From<ModeArg> for ModeRequest {
             ModeArg::Auto => ModeRequest::Auto,
             ModeArg::Windows => ModeRequest::Windows,
             ModeArg::WindowsNtXp => ModeRequest::WindowsNtXp,
+            ModeArg::Windows2000 => ModeRequest::Windows2000,
             ModeArg::Linux => ModeRequest::IsolinuxLinux,
             ModeArg::Hybrid => ModeRequest::Hybrid,
             ModeArg::Uefi => ModeRequest::UefiOnly,

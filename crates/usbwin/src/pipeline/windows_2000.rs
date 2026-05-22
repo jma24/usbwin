@@ -1,10 +1,16 @@
-//! Windows NT 5.x-style install USB pipeline.
+//! Windows 2000 (NT 5.0) install pipeline.
 //!
-//! This is the hardware-green XP path from the recovery plan:
-//! GRUB4DOS RAM-maps the original ISO as a virtual CD, maps a FiraDisk
-//! textmode-driver floppy, swaps BIOS disk order so the internal HDD is first,
-//! and then chainloads XP setup. The second GRUB4DOS menu entry repeats the
-//! maps and chainloads the target HDD so GUI-mode setup still sees the CD.
+//! Mirrors `windows_ntxp` (XP/2003 + FiraDisk) but swaps FiraDisk for
+//! SVBus, because FiraDisk's SCSI miniport collides with the NT 5.0
+//! storage stack (hardware-confirmed 2026-05-22:
+//! `STOP 0x0000007B 0xF6063848 0xC0000034`). The GRUB4DOS RAM-mapped-ISO
+//! chain shape is otherwise identical: map the install ISO into RAM as
+//! `(0xff)`, map the SVBus F6 floppy as `(fd0)`, drive-swap, chainload
+//! `SETUPLDR.BIN`. See `docs/WIN2K_SVBUS.md`.
+//!
+//! Shares the `ntxp_floppy::add_winnt_sif` and `ntxp_iso::inject_winnt_sif`
+//! helpers with the XP path; those are generic FAT12 / ISO9660
+//! manipulators and don't care which driver is on the floppy.
 
 use anyhow::{anyhow, bail, Context, Result};
 use indicatif::{ProgressBar, ProgressStyle};
@@ -24,48 +30,44 @@ use super::ntxp_iso;
 const SECTOR_SIZE: u64 = 512;
 const PARTITION_START_LBA: u32 = 2048;
 
-const GRLDR: &[u8] = include_bytes!("ntxp_assets/grldr");
+/// GRUB4DOS 0.4.5c (2015-05-18) — the SVBus-compatible grldr per upstream
+/// `ReadMe.txt`. We do NOT reuse the XP path's 0.4.6a 2020-08-09 grldr:
+/// chenall/grub4dos issue #154 documents a low-memory regression
+/// introduced 2017-02-04 that breaks SVBus's `$INT13SFGRUB4DOS` signature
+/// scan (and broke XP+NTLDR RAM-loaded ISO boot at the same time).
+/// Hardware-confirmed on the Dell E6410 2026-05-22: 0.4.6a 2020-08-09 +
+/// SVBus = `STOP 0x7B 0xC0000034` (zero drives enumerated). See
+/// `win2k_assets/PROVENANCE.md`.
+const GRLDR: &[u8] = include_bytes!("win2k_assets/grldr");
 const GRLDR_MBR: &[u8] = include_bytes!("ntxp_assets/grldr.mbr");
-const FIRADISK_IMA: &[u8] = include_bytes!("ntxp_assets/firadisk.ima");
+const SVBUS_IMA: &[u8] = include_bytes!("win2k_assets/svbus.ima");
 
 const MENU_LST: &str = r#"timeout 10
 default 0
 
-title 1. XP text-mode setup from RAM ISO (FiraDisk)
+title 1. Win2k text-mode setup from RAM ISO (SVBus)
 map (hd0) (hd1)
 map (hd1) (hd0)
-map --mem /FIRADISK.IMA (fd0)
-# (fd1) duplicate disabled 2026-05-22 to test the Win2k 0x7B/0xC0000035
-# name-collision hypothesis (FiraDisk loading twice). Restore if XP
-# regresses or if Win2k still BSODs with the same code.
-#map --mem /FIRADISK.IMA (fd1)
-map --mem /XP.ISO (0xff)
+map --mem /SVBUS.IMA (fd0)
+map --mem /WIN2K.ISO (0xff)
 map --hook
 root (0xff)
 chainloader (0xff)/I386/SETUPLDR.BIN
 
-title 2. Continue XP GUI-mode setup from internal HDD
+title 2. Continue Win2k GUI-mode setup from internal HDD
 map (hd0) (hd1)
 map (hd1) (hd0)
-map --mem /FIRADISK.IMA (fd0)
-# (fd1) duplicate disabled 2026-05-22 to test the Win2k 0x7B/0xC0000035
-# name-collision hypothesis (FiraDisk loading twice). Restore if XP
-# regresses or if Win2k still BSODs with the same code.
-#map --mem /FIRADISK.IMA (fd1)
-map --mem /XP.ISO (0xff)
+map --mem /SVBUS.IMA (fd0)
+map --mem /WIN2K.ISO (0xff)
 map --hook
 root (hd0,0)
 chainloader (hd0)+1
 
-title 3. XP text-mode setup via ISO boot image
+title 3. Win2k text-mode setup via ISO boot image
 map (hd0) (hd1)
 map (hd1) (hd0)
-map --mem /FIRADISK.IMA (fd0)
-# (fd1) duplicate disabled 2026-05-22 to test the Win2k 0x7B/0xC0000035
-# name-collision hypothesis (FiraDisk loading twice). Restore if XP
-# regresses or if Win2k still BSODs with the same code.
-#map --mem /FIRADISK.IMA (fd1)
-map --mem /XP.ISO (0xff)
+map --mem /SVBUS.IMA (fd0)
+map --mem /WIN2K.ISO (0xff)
 map --hook
 chainloader (0xff)
 "#;
@@ -92,13 +94,13 @@ pub fn run(plan: &WritePlan, info: &DeviceInfo, config: &Config) -> Result<()> {
     let usb_mount = find_mount_for_label(&plan.label)
         .ok_or_else(|| anyhow!("formatted partition didn't appear in /Volumes"))?;
 
-    stage_files(plan, &usb_mount, config).context("staging GRUB4DOS/FiraDisk XP payload")?;
+    stage_files(plan, &usb_mount, config).context("staging GRUB4DOS/SVBus Win2k payload")?;
 
     diskutil::unmount_disk(&bsd_path).context("unmount after staging files")?;
     diskutil::eject(&bsd_path).context("eject after write")?;
 
     println!(
-        "\nusbwin: {} -> {} (Windows NT/XP FiraDisk mode) OK",
+        "\nusbwin: {} -> {} (Windows 2000 SVBus mode) OK",
         plan.iso_path.display(),
         info.path
     );
@@ -115,10 +117,10 @@ fn validate_assets() -> Result<()> {
     if GRLDR.is_empty() {
         bail!("embedded GRLDR asset is empty");
     }
-    if FIRADISK_IMA.len() != 1_474_560 {
+    if SVBUS_IMA.len() != 1_474_560 {
         bail!(
-            "embedded FIRADISK.IMA has unexpected length {}; expected 1.44MB floppy image",
-            FIRADISK_IMA.len()
+            "embedded SVBUS.IMA has unexpected length {}; expected 1.44MB floppy image",
+            SVBUS_IMA.len()
         );
     }
     Ok(())
@@ -127,7 +129,7 @@ fn validate_assets() -> Result<()> {
 fn validate_capacity(plan: &WritePlan, info: &DeviceInfo) -> Result<()> {
     let needed = plan.iso_bytes
         + GRLDR.len() as u64
-        + FIRADISK_IMA.len() as u64
+        + SVBUS_IMA.len() as u64
         + MENU_LST.len() as u64
         + 16 * 1024 * 1024;
     let usable = info
@@ -135,7 +137,7 @@ fn validate_capacity(plan: &WritePlan, info: &DeviceInfo) -> Result<()> {
         .saturating_sub(PARTITION_START_LBA as u64 * SECTOR_SIZE);
     if needed > usable {
         bail!(
-            "NT/XP FiraDisk payload needs {} bytes; device has about {} usable bytes",
+            "Win2k SVBus payload needs {} bytes; device has about {} usable bytes",
             needed,
             usable
         );
@@ -176,10 +178,10 @@ fn patch_partition_table(mbr_track: &mut [u8], disk_size_bytes: u64) -> Result<(
         .context("device too large for this MBR-only prototype path (>2TiB partition)")?;
 
     let mut entry = [0u8; 16];
-    entry[0] = 0x80; // active
-    entry[1..4].copy_from_slice(&[0x20, 0x21, 0x00]); // CHS for LBA 2048: C=0,H=32,S=33
-    entry[4] = 0x0c; // FAT32 LBA
-    entry[5..8].copy_from_slice(&[0xfe, 0xff, 0xff]); // saturated end CHS
+    entry[0] = 0x80;
+    entry[1..4].copy_from_slice(&[0x20, 0x21, 0x00]);
+    entry[4] = 0x0c;
+    entry[5..8].copy_from_slice(&[0xfe, 0xff, 0xff]);
     entry[8..12].copy_from_slice(&PARTITION_START_LBA.to_le_bytes());
     entry[12..16].copy_from_slice(&partition_sectors_u32.to_le_bytes());
 
@@ -194,46 +196,46 @@ fn stage_files(plan: &WritePlan, usb_mount: &Path, config: &Config) -> Result<()
         .with_context(|| format!("writing {}", usb_mount.join("GRLDR").display()))?;
     std::fs::write(usb_mount.join("menu.lst"), MENU_LST)
         .with_context(|| format!("writing {}", usb_mount.join("menu.lst").display()))?;
-    let xp_iso = usb_mount.join("XP.ISO");
-    copy_iso_as_xp_iso(&plan.iso_path, &xp_iso)?;
+    let win2k_iso = usb_mount.join("WIN2K.ISO");
+    copy_iso_to(&plan.iso_path, &win2k_iso)?;
     if let Some(unattended) = &config.unattended {
         let sif = generate_winnt_sif(unattended);
-        let mut firadisk = FIRADISK_IMA.to_vec();
-        ntxp_floppy::add_winnt_sif(&mut firadisk, sif.as_bytes())
-            .context("injecting A:\\WINNT.SIF into FiraDisk floppy image")?;
-        std::fs::write(usb_mount.join("FIRADISK.IMA"), &firadisk)
-            .with_context(|| format!("writing {}", usb_mount.join("FIRADISK.IMA").display()))?;
-        println!("usbwin: injected A:\\WINNT.SIF into staged FIRADISK.IMA");
+        let mut svbus = SVBUS_IMA.to_vec();
+        ntxp_floppy::add_winnt_sif(&mut svbus, sif.as_bytes())
+            .context("injecting A:\\WINNT.SIF into SVBus floppy image")?;
+        std::fs::write(usb_mount.join("SVBUS.IMA"), &svbus)
+            .with_context(|| format!("writing {}", usb_mount.join("SVBUS.IMA").display()))?;
+        println!("usbwin: injected A:\\WINNT.SIF into staged SVBUS.IMA");
 
-        ntxp_iso::inject_winnt_sif(&xp_iso, sif.as_bytes())
-            .with_context(|| format!("injecting I386/WINNT.SIF into {}", xp_iso.display()))?;
-        println!("usbwin: injected I386/WINNT.SIF into staged XP.ISO for unattended setup");
+        ntxp_iso::inject_winnt_sif(&win2k_iso, sif.as_bytes())
+            .with_context(|| format!("injecting I386/WINNT.SIF into {}", win2k_iso.display()))?;
+        println!("usbwin: injected I386/WINNT.SIF into staged WIN2K.ISO for unattended setup");
     } else {
-        std::fs::write(usb_mount.join("FIRADISK.IMA"), FIRADISK_IMA)
-            .with_context(|| format!("writing {}", usb_mount.join("FIRADISK.IMA").display()))?;
+        std::fs::write(usb_mount.join("SVBUS.IMA"), SVBUS_IMA)
+            .with_context(|| format!("writing {}", usb_mount.join("SVBUS.IMA").display()))?;
     }
 
     let _ = std::process::Command::new("sync").status();
-    println!("usbwin: staged GRLDR, menu.lst, XP.ISO, FIRADISK.IMA");
+    println!("usbwin: staged GRLDR, menu.lst, WIN2K.ISO, SVBUS.IMA");
     Ok(())
 }
 
-fn copy_iso_as_xp_iso(src: &Path, dest: &Path) -> Result<()> {
-    const CHUNK: usize = 4 * 1024 * 1024;
-    let total = std::fs::metadata(src)
-        .with_context(|| format!("stat {}", src.display()))?
-        .len();
+fn copy_iso_to(src: &Path, dst: &Path) -> Result<()> {
+    let mut input = File::open(src).with_context(|| format!("opening {}", src.display()))?;
+    let mut output =
+        File::create(dst).with_context(|| format!("creating {}", dst.display()))?;
+    let total = input
+        .metadata()
+        .map(|m| m.len())
+        .with_context(|| format!("stat {}", src.display()))?;
     let pb = ProgressBar::new(total);
     pb.set_style(
-        ProgressStyle::with_template("  {prefix:<6} {wide_bar:.cyan/blue} {msg}")?
-            .progress_chars("█▓▒░ "),
+        ProgressStyle::with_template("{spinner} {msg}")
+            .unwrap()
+            .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏ "),
     );
-    pb.set_prefix("iso");
-    pb.enable_steady_tick(Duration::from_millis(100));
 
-    let mut input = File::open(src).with_context(|| format!("open {}", src.display()))?;
-    let mut output = File::create(dest).with_context(|| format!("create {}", dest.display()))?;
-    let mut buf = vec![0u8; CHUNK];
+    let mut buf = vec![0u8; 4 * 1024 * 1024];
     let start = Instant::now();
     let mut copied = 0u64;
     loop {
@@ -241,7 +243,7 @@ fn copy_iso_as_xp_iso(src: &Path, dest: &Path) -> Result<()> {
         if n == 0 {
             break;
         }
-        output.write_all(&buf[..n]).context("write XP.ISO")?;
+        output.write_all(&buf[..n]).context("write WIN2K.ISO")?;
         copied += n as u64;
         pb.set_position(copied);
         update_iso_message(&pb, copied, total, start);
@@ -259,7 +261,7 @@ fn generate_winnt_sif(config: &UnattendedConfig) -> String {
     out.push_str("\r\n[Unattended]\r\n");
     out.push_str("UnattendMode=DefaultHide\r\n");
     out.push_str("OemSkipEula=Yes\r\n");
-    out.push_str("TargetPath=\\WINDOWS\r\n");
+    out.push_str("TargetPath=\\WINNT\r\n");
     out.push_str("Repartition=No\r\n");
     out.push_str("FileSystem=*\r\n");
     out.push_str("DriverSigningPolicy=Ignore\r\n");
@@ -368,33 +370,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn patch_partition_table_matches_prototype_layout() {
-        let mut track = vec![0u8; 8192];
-        patch_partition_table(&mut track, 64_023_257_088).unwrap();
-
-        let e = &track[446..462];
-        assert_eq!(e[0], 0x80);
-        assert_eq!(&e[1..4], &[0x20, 0x21, 0x00]);
-        assert_eq!(e[4], 0x0c);
-        assert_eq!(&e[5..8], &[0xfe, 0xff, 0xff]);
-        assert_eq!(u32::from_le_bytes(e[8..12].try_into().unwrap()), 2048);
-        assert_eq!(
-            u32::from_le_bytes(e[12..16].try_into().unwrap()),
-            125_043_376
-        );
-        assert_eq!(&track[510..512], &[0x55, 0xaa]);
+    fn svbus_ima_has_floppy_size() {
+        assert_eq!(SVBUS_IMA.len(), 1_474_560);
     }
 
     #[test]
-    fn menu_has_textmode_and_gui_continuation_entries() {
-        assert!(MENU_LST.contains("title 1. XP text-mode setup"));
-        assert!(MENU_LST.contains("title 2. Continue XP GUI-mode setup"));
-        assert!(MENU_LST.contains("map --mem /XP.ISO (0xff)"));
-        assert!(MENU_LST.contains("chainloader (hd0)+1"));
+    fn menu_references_svbus_and_win2k_iso() {
+        assert!(MENU_LST.contains("map --mem /SVBUS.IMA (fd0)"));
+        assert!(MENU_LST.contains("map --mem /WIN2K.ISO (0xff)"));
+        assert!(MENU_LST.contains("title 1. Win2k text-mode setup"));
+        assert!(MENU_LST.contains("title 2. Continue Win2k GUI-mode setup"));
+        assert!(!MENU_LST.contains("FIRADISK"));
+        assert!(!MENU_LST.contains("XP.ISO"));
     }
 
     #[test]
-    fn generated_winnt_sif_keeps_manual_partitioning() {
+    fn generated_winnt_sif_targets_winnt_directory() {
         let sif = generate_winnt_sif(&UnattendedConfig {
             product_key: Some("AAAAA-BBBBB-CCCCC-DDDDD-EEEEE".into()),
             full_name: "QA User".into(),
@@ -403,36 +394,8 @@ mod tests {
             admin_password: None,
             timezone: Some(35),
         });
-
-        assert!(sif.contains("[Data]\r\n"));
-        assert!(sif.contains("AutoPartition=0\r\n"));
-        assert!(sif.contains("UnattendedInstall=\"Yes\"\r\n"));
-        assert!(sif.contains("OemSkipEula=Yes\r\n"));
-        assert!(sif.contains("Repartition=No\r\n"));
-        assert!(sif.contains("FileSystem=*\r\n"));
-        assert!(sif.contains("AdminPassword=*\r\n"));
-        assert!(sif.contains("TimeZone=35\r\n"));
-        assert!(sif.contains("ProductKey=AAAAA-BBBBB-CCCCC-DDDDD-EEEEE\r\n"));
-        assert!(sif.contains("FullName=\"QA User\"\r\n"));
-        assert!(sif.contains("ComputerName=*\r\n"));
-        assert!(!sif.contains("DestinationDiskNumber"));
-        assert!(!sif.contains("DestinationPartitionNumber"));
-    }
-
-    #[test]
-    fn generated_winnt_sif_quotes_user_values() {
-        let sif = generate_winnt_sif(&UnattendedConfig {
-            product_key: None,
-            full_name: "A \"Quoted\" User".into(),
-            organization: "C:\\Lab".into(),
-            computer_name: "XPTEST".into(),
-            admin_password: Some("p@ss \"word\"".into()),
-            timezone: None,
-        });
-
-        assert!(sif.contains("AdminPassword=\"p@ss \\\"word\\\"\"\r\n"));
-        assert!(sif.contains("FullName=\"A \\\"Quoted\\\" User\"\r\n"));
-        assert!(sif.contains("OrgName=\"C:\\\\Lab\"\r\n"));
-        assert!(sif.contains("ComputerName=\"XPTEST\"\r\n"));
+        assert!(sif.contains("TargetPath=\\WINNT"));
+        assert!(sif.contains("AutoPartition=0"));
+        assert!(sif.contains("ProductKey=AAAAA-BBBBB-CCCCC-DDDDD-EEEEE"));
     }
 }
