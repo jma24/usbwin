@@ -83,53 +83,101 @@ docs have been removed:
 
 ### Windows 2000 install support
 
-Status: 1.0 blocker. Scoping in `WIN2K_SVBUS.md`.
+Status: 1.0 blocker. Text-mode install works on the Dell E6410
+(verified 2026-05-22). First boot of the installed Win2k requires a
+manual `boot.ini` repair (see "Win2k boot.ini auto-repair (phase 3)"
+below). GUI-mode setup and first-desktop boot are expected to work
+after the repair but are not yet hardware-validated through to
+completion.
 
-`usbwin-iso` recognizes Windows 2000-style NT5 install media so
-`--type=auto` can classify it as NT5-class, but hardware testing on
-2026-05-21 showed Win2k reaches text-mode setup and then BSODs (stop code
-not captured). Do not claim Win2k support in user-facing docs or release
-notes.
+Full root-cause story and working install procedure live in
+`docs/WIN2K_SVBUS.md`. Quick summary of what's actually shipping:
 
-Web research on 2026-05-21 established the root cause and the
-implementation direction:
+- `BootMode::Windows2000` + `--type=windows-2000` (alias `win2k`)
+  plumbed end-to-end. ISO classifier splits NT5 media on WIN51/WIN52
+  markers (present -> XP/2003 path, absent -> Win2k path).
+- SVBus V1.3 vendored from SourceForge with `svbusx86.sys` PE
+  subsystem version patched 5.02 -> 5.00 for NT 5.0 compatibility.
+  See `crates/usbwin/src/pipeline/win2k_assets/PROVENANCE.md`.
+- GRUB4DOS 0.4.5c (2015-05-18) vendored for the Win2k path
+  specifically (XP keeps 0.4.6a).
+- menu.lst entry 1: no `hd0/hd1` swap, El Torito chainload
+  (`chainloader (0xff)`). F6 + manual "SVBus Virtual SCSI Host
+  Adapter x86" selection is required at the early text-mode setup
+  screen.
+- menu.lst entry 2: swap + `chainloader (hd0,0)/ntldr`. Works only
+  after the boot.ini repair below.
 
-- **FiraDisk does not support Windows 2000** (XP/2003+ only; confirmed via
-  reboot.pro thread 8168 and the FiraDisk changelog on thread 8804). The
-  most likely BSOD is `STOP 0x7B INACCESSIBLE_BOOT_DEVICE` because
-  FiraDisk's SCSI miniport never enumerates under NT 5.0, so setupldr
-  loses the boot volume at the real-mode → protected-mode handoff.
-- **SVBus** (the grub4dos-org successor to WinVBlock, github.com/grub4dos/
-  svbus) is the canonical Win2k-compatible swap-in. Its ReadMe documents
-  a verbatim Win2k SP4 install recipe and the GRUB4DOS chain shape is
-  nearly identical to the current XP `FIRADISK.IMA` path.
-- USB controller drivers (`usbehci.sys`/`usbohci.sys`) **probably don't
-  matter** for the RAM-mapped-ISO architecture (follow-up research:
-  GRUB4DOS `map --mem` puts the ISO in RAM and INT 13h is serviced from
-  the buffer, so setup never reads from USB post-handoff). The MSFN 147119
-  BSOD is specific to WinSetupFromUSB's sector-mapped path. **Not
-  validated on hardware yet.** Conclusions above (FiraDisk-vs-Win2k root
-  cause, SVBus direction, USB-driver irrelevance) all need confirmation
-  via the diagnostic capture step before code work begins.
+Remaining work to call this "done" for v1.0:
+- Hardware-verify GUI-mode setup completes through to first desktop
+  boot AFTER the manual boot.ini repair (Option A or B in
+  `docs/WIN2K_SVBUS.md`). Strongly expected to work; iteration this
+  week stopped at the boot.ini issue itself.
+- Ship the phase 3 auto-repair (next item) OR document the manual
+  repair step as part of the supported procedure. Either is
+  acceptable for 1.0.
+- Add an explicit support-matrix row in the README once the
+  end-to-end path is green.
 
-Implementation direction: add a separate `windows-2000` mode that swaps
-`FIRADISK.IMA` for `svbus.ima` and ships a Win2k `txtsetup.oem` template.
-Keep the verified XP path on FiraDisk (zero regression risk).
+### Win2k boot.ini auto-repair (phase 3)
+
+Status: v1.0 polish item. Probably ships before 1.0 to remove the
+manual step; if not, the manual procedure in `docs/WIN2K_SVBUS.md`
+becomes the documented 1.0 path.
+
+**The conflict** (now hardware-validated 2026-05-22):
+
+- SVBus's text-mode slot enumeration breaks if GRUB4DOS does the
+  `hd0/hd1` swap during install (BSOD 0x7B/0xC0000034). Entry 1
+  must run with no swap.
+- Win2k's text-mode setup writes boot.ini's `rdisk(N)` based on the
+  BIOS-visible disk ordering at install time. With no swap, USB is
+  0x80 and the internal HDD is 0x81 -> setup writes `rdisk(1)`.
+- BUT: NTLDR + NT PBR + ARC-path resolution all hard-code that the
+  system disk is BIOS drive 0x80. To boot the installed Win2k via
+  GRUB4DOS chainload on the second BIOS HDD, you need the swap (so
+  internal HDD becomes 0x80). With the swap, `rdisk(1)` resolves
+  to the USB, not the HDD -> ntoskrnl missing. boot.ini needs
+  `rdisk(0)`.
+- USB hot-removal during install was tested and corrupts the
+  install (BIOS caches the USB; Win2k still sees it; setup writes
+  the boot loader to the USB instead of the HDD).
+- GRUB4DOS 0.4.5c's in-place NTFS write rejects boot.ini with
+  "Error 16 Fatal cannot write resident/small file! Enlarge it to
+  2Kb and try again" because boot.ini is small enough to be MFT-
+  resident. No way to enlarge from outside the FS.
+
+**The fix**: a third menu entry that boots a small environment,
+mounts the NTFS partition, rewrites `rdisk(1)` -> `rdisk(0)` in
+`C:\boot.ini`, and reboots. Implementation options ranked by
+maintainability:
+
+1. **Tiny Linux initrd** (Tinycore/Alpine, ~20 MB asset cost):
+   boots, mounts via ntfs-3g, runs `sed`, reboots. Most robust; the
+   kernel handles all NTFS edge cases. **Recommended.**
+2. **Automated Recovery Console flow**: chain to setupldr with a
+   pre-staged response file that runs `set AllowAllPaths = TRUE` +
+   `copy con c:\boot.ini` + the new content. No extra binaries
+   shipped, but Recovery Console isn't really designed for
+   automation and the procedure hasn't been hardware-verified end
+   to end (`set AllowAllPaths = TRUE` was suggested by upstream
+   research but never tested in our iteration).
+3. **FreeDOS + NTFS write tool** (~2 MB): smaller than Linux but
+   the FOSS NTFS-write story is unmaintained.
+4. **GRUB4DOS raw-sector patch of the MFT entry**: smallest
+   footprint, no extra asset. Compute LBA of boot.ini's MFT record,
+   patch the resident data bytes. Fragile -- one NTFS layout
+   variation away from corrupting the volume.
 
 Done means:
-- Capture the actual stop code on the next E6410 run (photograph the
-  `*** STOP: 0x...` line; add `/sos` to setupldr to print each driver as
-  it loads). This validates the FiraDisk hypothesis before any code work.
-- Vendor SVBus into the repo with provenance pinned to a specific
-  grub4dos/svbus release.
-- Build the `windows-2000` mode: GRUB4DOS chain reuses the XP shape,
-  staged floppy carries SVBus instead of FiraDisk, F6 `txtsetup.oem`
-  references "SVBus Virtual SCSI Host Adapter x86".
-- Only reintroduce the `txtsetup.sif` USB-driver patch if SVBus alone
-  doesn't get to first desktop boot.
-- Hardware-verify Windows 2000 install through first desktop boot on the
-  E6410.
-- Add an explicit support matrix row after the green path lands.
+- Pick one implementation (recommendation: option 1).
+- Ship as a third GRUB4DOS menu entry; document in the NEXT STEPS
+  block as the recommended post-install step.
+- Hardware-verify the full install path: install -> reboot ->
+  phase 3 (boot.ini fixed) -> reboot -> native boot -> GUI-mode ->
+  first desktop.
+- Remove the manual boot.ini repair procedure from the NEXT STEPS
+  block once phase 3 is hardware-proven across multiple machines.
 
 ### XP AHCI/SATA/RAID textmode storage support
 

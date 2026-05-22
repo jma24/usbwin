@@ -42,34 +42,60 @@ const GRLDR: &[u8] = include_bytes!("win2k_assets/grldr");
 const GRLDR_MBR: &[u8] = include_bytes!("ntxp_assets/grldr.mbr");
 const SVBUS_IMA: &[u8] = include_bytes!("win2k_assets/svbus.ima");
 
+// menu.lst notes for the Win2k path (hardware-iterated 2026-05-22):
+//
+// Entry 1 (text-mode setup): NO `hd0/hd1` swap. The swap perturbs
+// SVBus's slot enumeration during text-mode and produces BSOD
+// 0x7B/0xC0000034. El Torito chainload `(0xff)` (not direct
+// `SETUPLDR.BIN`) is required so the MS "Press any key to boot from
+// CD..." prompt fires correctly and setup registers the boot device
+// as a CD-ROM. F6 + manual "SVBus Virtual SCSI Host Adapter x86"
+// selection is required at the early text-mode setup screen.
+//
+// Side effect of entry 1 having no swap: Win2k sees the internal HDD
+// as BIOS drive 0x81 at install time and writes `rdisk(1)` into the
+// boot.ini it generates. This boot.ini is incorrect for native boot
+// (USB removed -> internal HDD becomes 0x80 = `rdisk(0)`). See
+// `docs/WIN2K_SVBUS.md` for the full analysis and the manual
+// post-install boot.ini repair procedure.
+//
+// Entry 2 (boot installed Win2k): swap IS required. NTLDR + NT PBR
+// + ARC-path resolution all hard-code that the system disk is BIOS
+// drive 0x80. Without the swap, NTLDR's INT13 reads target the USB
+// (0x80) and fail. With the swap, internal HDD becomes 0x80 and
+// NTLDR reads the right disk. NB: even with the swap, this entry
+// only works AFTER boot.ini has been repaired to `rdisk(0)`; with
+// the install-time `rdisk(1)`, NTLDR's ARC path resolves to the
+// post-swap 0x81 (= USB) and ntoskrnl is "missing." Boot.ini repair
+// is currently a manual Recovery Console / Linux-live-USB step;
+// automating it as a third menu entry is the v1.0 polish item
+// tracked in docs/BACKLOG.md.
+//
+// Entry 3 (direct-setupldr fallback): kept for diagnostic parity
+// with entry 1's El Torito chainload. Not the normal install path.
 const MENU_LST: &str = r#"timeout 10
 default 0
 
 title 1. Win2k text-mode setup from RAM ISO (SVBus)
+map --mem /SVBUS.IMA (fd0)
+map --mem /WIN2K.ISO (0xff)
+map --hook
+chainloader (0xff)
+
+title 2. Boot installed Windows 2000 (requires rdisk(0) in boot.ini)
 map (hd0) (hd1)
 map (hd1) (hd0)
+map --hook
+rootnoverify (hd0,0)
+chainloader (hd0,0)/ntldr
+boot
+
+title 3. Win2k text-mode setup via direct SETUPLDR.BIN (fallback)
 map --mem /SVBUS.IMA (fd0)
 map --mem /WIN2K.ISO (0xff)
 map --hook
 root (0xff)
 chainloader (0xff)/I386/SETUPLDR.BIN
-
-title 2. Continue Win2k GUI-mode setup from internal HDD
-map (hd0) (hd1)
-map (hd1) (hd0)
-map --mem /SVBUS.IMA (fd0)
-map --mem /WIN2K.ISO (0xff)
-map --hook
-root (hd0,0)
-chainloader (hd0)+1
-
-title 3. Win2k text-mode setup via ISO boot image
-map (hd0) (hd1)
-map (hd1) (hd0)
-map --mem /SVBUS.IMA (fd0)
-map --mem /WIN2K.ISO (0xff)
-map --hook
-chainloader (0xff)
 "#;
 
 pub fn run(plan: &WritePlan, info: &DeviceInfo, config: &Config) -> Result<()> {
@@ -379,9 +405,52 @@ mod tests {
         assert!(MENU_LST.contains("map --mem /SVBUS.IMA (fd0)"));
         assert!(MENU_LST.contains("map --mem /WIN2K.ISO (0xff)"));
         assert!(MENU_LST.contains("title 1. Win2k text-mode setup"));
-        assert!(MENU_LST.contains("title 2. Continue Win2k GUI-mode setup"));
+        assert!(MENU_LST.contains("title 2. Boot installed Windows 2000"));
         assert!(!MENU_LST.contains("FIRADISK"));
         assert!(!MENU_LST.contains("XP.ISO"));
+    }
+
+    #[test]
+    fn entry_1_omits_swap_entry_2_keeps_it() {
+        // Hardware-iterated 2026-05-22:
+        //   Entry 1 (text-mode): SVBus slot enumeration breaks with
+        //   the swap. Verified failure: BSOD 0x7B/0xC0000034.
+        //   Entry 2 (boot installed): NT loaders hard-code BIOS drive
+        //   0x80 as the system disk. Without the swap, NTLDR cannot
+        //   read its own disk. Verified working with swap + post-
+        //   install boot.ini repair (manual).
+        let entry1_start = MENU_LST.find("title 1.").unwrap();
+        let entry2_start = MENU_LST.find("title 2.").unwrap();
+        let entry3_start = MENU_LST.find("title 3.").unwrap();
+        let entry1 = &MENU_LST[entry1_start..entry2_start];
+        let entry2 = &MENU_LST[entry2_start..entry3_start];
+        assert!(!entry1.contains("map (hd0) (hd1)"));
+        assert!(entry2.contains("map (hd0) (hd1)"));
+        assert!(entry2.contains("map (hd1) (hd0)"));
+    }
+
+    #[test]
+    fn entry_2_chainloads_ntldr_from_swapped_hd0() {
+        // After the swap, hd0 = internal HDD. We chainload
+        // (hd0,0)/ntldr (NTLDR file from the post-swap internal HDD's
+        // first partition) so NTLDR gets the right environment.
+        let entry2_start = MENU_LST.find("title 2.").unwrap();
+        let entry3_start = MENU_LST.find("title 3.").unwrap();
+        let entry2 = &MENU_LST[entry2_start..entry3_start];
+        assert!(entry2.contains("chainloader (hd0,0)/ntldr"));
+        assert!(entry2.contains("rootnoverify (hd0,0)"));
+    }
+
+    #[test]
+    fn menu_entry_1_uses_el_torito_chainload() {
+        // Entry 1 chainloads (0xff) directly (El Torito boot record of the
+        // virtual CD), matching upstream SVBus recipes. Entry 3 keeps the
+        // direct-SETUPLDR.BIN form as a fallback.
+        let entry1_start = MENU_LST.find("title 1. Win2k text-mode setup").unwrap();
+        let entry2_start = MENU_LST.find("title 2. Boot installed").unwrap();
+        let entry1 = &MENU_LST[entry1_start..entry2_start];
+        assert!(entry1.contains("chainloader (0xff)\n"));
+        assert!(!entry1.contains("chainloader (0xff)/I386/SETUPLDR.BIN"));
     }
 
     #[test]
