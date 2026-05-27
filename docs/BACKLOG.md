@@ -318,8 +318,10 @@ Status: 1.0 blocker (reduced scope 2026-05-26 — see signing note below).
 Done means:
 - Remove the local sibling `../mkmsbr` requirement from release builds by
   using a published crate, vendored dependency, or pinned git dependency.
-  Implemented with the published `mkmsbr` crate; needs fresh-machine
-  install verification (the last real release task).
+  Implemented with the published `mkmsbr` crate. ✅ Fresh-checkout verified
+  2026-05-26: clean clone with an isolated CARGO_HOME pulled `mkmsbr 1.0.1`
+  from crates.io (registry source + checksum, no local path dep), built
+  release offline, and passed all 80 workspace tests.
 - Update README install instructions for users who are not building from a
   local multi-repo checkout.
 - Ship via the same channels as mkmsbr: crates.io (`cargo install`) and the
