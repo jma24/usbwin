@@ -37,6 +37,10 @@ struct Cli {
     #[arg(long, value_name = "PATH")]
     image: PathBuf,
 
+    /// How to present --image to QEMU.
+    #[arg(long, value_enum, default_value_t = BootMedia::Disk)]
+    boot_media: BootMedia,
+
     /// Expected install flavor — picks the OCR matchers.
     #[arg(long, value_enum, default_value_t = Flavor::WindowsXp)]
     flavor: Flavor,
@@ -57,9 +61,17 @@ struct Cli {
     #[arg(long, default_value = "8G")]
     target_size: String,
 
+    /// How to attach the blank target HDD.
+    #[arg(long, value_enum, default_value_t = TargetBus::Ide)]
+    target_bus: TargetBus,
+
     /// QEMU RAM in MiB.
     #[arg(long, default_value_t = 512)]
     mem_mib: u32,
+
+    /// QEMU machine type.
+    #[arg(long, default_value = "pc")]
+    machine: String,
 
     /// Keep the VM alive after verdict (debug). Default kills on exit.
     #[arg(long)]
@@ -74,18 +86,42 @@ enum Flavor {
     Windows7,
 }
 
-impl Flavor {
+#[derive(Copy, Clone, Debug, ValueEnum)]
+enum TargetBus {
+    /// Attach target HDD as IDE, matching the original smoke harness.
+    Ide,
+    /// Attach target HDD behind a QEMU ICH9 AHCI controller.
+    Ahci,
+}
+
+#[derive(Copy, Clone, Debug, ValueEnum)]
+enum BootMedia {
+    /// Boot --image as a raw hard disk.
+    Disk,
+    /// Boot --image as an IDE CD-ROM.
+    Cdrom,
+}
+
+impl Cli {
     /// Substrings (case-insensitive) that mean "we got far enough — PASS".
-    fn pass_markers(self) -> &'static [&'static str] {
-        match self {
+    fn pass_markers(&self) -> &'static [&'static str] {
+        match (self.flavor, self.target_bus) {
+            // AHCI coverage needs to get past storage-driver load and disk
+            // enumeration. The normal early text-mode markers are too early:
+            // setup can show them before failing to load iaStor.sys.
+            (Flavor::WindowsXp, TargetBus::Ahci) => &[
+                "unpartitioned space",
+                "the following list shows",
+                "to set up windows xp on the selected item",
+            ],
             // Text-mode setup banner + the F6/repair prompt that follows.
-            Flavor::WindowsXp => &[
+            (Flavor::WindowsXp, _) => &[
                 "welcome to setup",
                 "setup is starting",
                 "press f6 if you",
                 "press r to repair",
             ],
-            Flavor::Windows7 => &[
+            (Flavor::Windows7, _) => &[
                 "windows is loading files",
                 "press any key to boot",
                 "starting windows",
@@ -94,7 +130,7 @@ impl Flavor {
     }
 
     /// Substrings that mean "we hit a fatal — FAIL".
-    fn fail_markers(self) -> &'static [&'static str] {
+    fn fail_markers(&self) -> &'static [&'static str] {
         // Generic BSOD body text — far more reliable than the STOP code,
         // which OCR sometimes mangles (saw "TRQL_NOT_LESS_OR_EQUAL"
         // for IRQL_NOT_LESS_OR_EQUAL in a real run).
@@ -104,6 +140,9 @@ impl Flavor {
             "stop:",
             "process1_initialization_failed",
             "inaccessible_boot_device",
+            "iastor.sys could not be found",
+            "the file iastor.sys",
+            "setup did not find any hard disk drives",
             "ntldr is missing",
             "ntldr is compressed",
             "bootmgr is missing",
@@ -117,20 +156,33 @@ impl Flavor {
 fn main() -> ExitCode {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .with_writer(std::io::stderr)
         .init();
 
     let cli = Cli::parse();
     match run(cli) {
-        Ok(Verdict::Pass { last_screenshot, matched }) => {
-            println!("PASS — matched {:?} in {}", matched, last_screenshot.display());
+        Ok(Verdict::Pass {
+            last_screenshot,
+            matched,
+        }) => {
+            println!(
+                "PASS — matched {:?} in {}",
+                matched,
+                last_screenshot.display()
+            );
             ExitCode::from(0)
         }
-        Ok(Verdict::Fail { last_screenshot, matched }) => {
-            println!("FAIL — matched {:?} in {}", matched, last_screenshot.display());
+        Ok(Verdict::Fail {
+            last_screenshot,
+            matched,
+        }) => {
+            println!(
+                "FAIL — matched {:?} in {}",
+                matched,
+                last_screenshot.display()
+            );
             ExitCode::from(1)
         }
         Ok(Verdict::Timeout { last_screenshot }) => {
@@ -149,9 +201,17 @@ fn main() -> ExitCode {
 
 #[derive(Debug)]
 enum Verdict {
-    Pass { last_screenshot: PathBuf, matched: String },
-    Fail { last_screenshot: PathBuf, matched: String },
-    Timeout { last_screenshot: Option<PathBuf> },
+    Pass {
+        last_screenshot: PathBuf,
+        matched: String,
+    },
+    Fail {
+        last_screenshot: PathBuf,
+        matched: String,
+    },
+    Timeout {
+        last_screenshot: Option<PathBuf>,
+    },
 }
 
 fn run(cli: Cli) -> Result<Verdict> {
@@ -197,52 +257,66 @@ fn run(cli: Cli) -> Result<Verdict> {
     let monitor_sock = work.join("monitor.sock");
     let _ = fs::remove_file(&monitor_sock);
 
-    let qemu = Command::new("qemu-system-i386")
-        .args([
-            "-m",
-            &cli.mem_mib.to_string(),
-            "-machine",
-            "pc",
-            "-accel",
-            "tcg",
-            "-cpu",
-            "pentium3",
-            "-rtc",
-            "base=localtime",
-            "-boot",
-            "c",
-            "-vga",
-            "std",
-            "-display",
-            "none",
-        ])
-        .arg("-drive")
-        .arg(format!(
-            "file={},format=raw,if=ide,index=0,media=disk",
-            cli.image.display()
-        ))
-        .arg("-drive")
-        .arg(format!(
-            "file={},format=raw,if=ide,index=1,media=disk",
-            target_img.display()
-        ))
+    let mut qemu_cmd = Command::new("qemu-system-i386");
+    qemu_cmd.args([
+        "-m",
+        &cli.mem_mib.to_string(),
+        "-machine",
+        &cli.machine,
+        "-accel",
+        "tcg",
+        "-cpu",
+        "pentium3",
+        "-rtc",
+        "base=localtime",
+        "-vga",
+        "std",
+        "-display",
+        "none",
+    ]);
+    match cli.boot_media {
+        BootMedia::Disk => {
+            qemu_cmd.args(["-boot", "c"]).arg("-drive").arg(format!(
+                "file={},format=raw,if=ide,index=0,media=disk",
+                cli.image.display()
+            ));
+        }
+        BootMedia::Cdrom => {
+            qemu_cmd.args(["-boot", "d"]).arg("-cdrom").arg(&cli.image);
+        }
+    }
+    match cli.target_bus {
+        TargetBus::Ide => {
+            qemu_cmd.arg("-drive").arg(format!(
+                "file={},format=raw,if=ide,index=1,media=disk",
+                target_img.display()
+            ));
+        }
+        TargetBus::Ahci => {
+            qemu_cmd
+                .args(["-device", "ich9-ahci,id=ahci"])
+                .arg("-drive")
+                .arg(format!(
+                    "file={},format=raw,if=none,id=targetdisk,media=disk",
+                    target_img.display()
+                ))
+                .args(["-device", "ide-hd,drive=targetdisk,bus=ahci.0"]);
+        }
+    }
+    let qemu = qemu_cmd
         .arg("-qmp")
-        .arg(format!(
-            "unix:{},server,nowait",
-            monitor_sock.display()
-        ))
+        .arg(format!("unix:{},server,nowait", monitor_sock.display()))
         // QEMU's stdout/stderr to log files in the work dir.
-        .stdout(Stdio::from(
-            fs::File::create(work.join("qemu.stdout"))?,
-        ))
-        .stderr(Stdio::from(
-            fs::File::create(work.join("qemu.stderr"))?,
-        ))
+        .stdout(Stdio::from(fs::File::create(work.join("qemu.stdout"))?))
+        .stderr(Stdio::from(fs::File::create(work.join("qemu.stderr"))?))
         .spawn()
         .context("spawn qemu-system-i386")?;
 
     // Make sure we kill QEMU on every exit path.
-    let mut guard = QemuGuard { child: Some(qemu), keep: cli.keep_running };
+    let mut guard = QemuGuard {
+        child: Some(qemu),
+        keep: cli.keep_running,
+    };
 
     // --- wait for monitor socket ---
     let mut mon = wait_for_monitor(&monitor_sock, Duration::from_secs(15))
@@ -276,7 +350,7 @@ fn run(cli: Cli) -> Result<Verdict> {
         fs::write(work.join(format!("shot-{:04}.txt", shot_idx)), &txt).ok();
 
         let lower = txt.to_lowercase();
-        for marker in cli.flavor.fail_markers() {
+        for marker in cli.fail_markers() {
             if lower.contains(marker) {
                 guard.shutdown();
                 return Ok(Verdict::Fail {
@@ -285,7 +359,7 @@ fn run(cli: Cli) -> Result<Verdict> {
                 });
             }
         }
-        for marker in cli.flavor.pass_markers() {
+        for marker in cli.pass_markers() {
             if lower.contains(marker) {
                 guard.shutdown();
                 return Ok(Verdict::Pass {
@@ -414,8 +488,12 @@ fn json_string(s: &str) -> String {
 fn ocr(img: &Path) -> Result<String> {
     // tesseract/leptonica chokes on some absolute paths under the harness's
     // sandbox; cd into the image's parent and pass the basename.
-    let dir = img.parent().ok_or_else(|| anyhow!("image has no parent dir"))?;
-    let name = img.file_name().ok_or_else(|| anyhow!("image has no filename"))?;
+    let dir = img
+        .parent()
+        .ok_or_else(|| anyhow!("image has no parent dir"))?;
+    let name = img
+        .file_name()
+        .ok_or_else(|| anyhow!("image has no filename"))?;
     let out = Command::new("tesseract")
         .current_dir(dir)
         .arg(name)

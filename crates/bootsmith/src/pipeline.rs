@@ -10,6 +10,8 @@ pub mod diskutil;
 pub mod hybrid;
 pub mod ntxp_floppy;
 pub mod ntxp_iso;
+pub mod ntxp_slipstream;
+pub mod ntxp_txtsetup;
 pub mod windows;
 pub mod windows_2000;
 pub mod windows_ntxp;
@@ -26,8 +28,12 @@ pub fn run(config: &Config) -> Result<()> {
         bail!("--unattended is currently supported only with --type=windows-ntxp or --type=windows-2000");
     }
 
+    if config.ahci_driver_dir.is_some() && !matches!(plan.mode, BootMode::WindowsNtXp) {
+        bail!("--ahci-driver-dir is currently supported only with --type=windows-ntxp");
+    }
+
     if config.dry_run {
-        tracing::info!(?plan, "dry-run: would execute plan");
+        tracing::debug!(?plan, "dry-run: would execute plan");
         println!(
             "dry-run: mode={}, iso={} ({} bytes), label={}, target={}",
             plan.mode.as_str(),
@@ -41,14 +47,13 @@ pub fn run(config: &Config) -> Result<()> {
 
     let target = config.device_path.to_string_lossy().to_string();
     let info = bootsmith_disk::macos::info_for(&target)
-        .map_err(|e| anyhow!("device lookup for {target}: {e}"))?
+        .with_context(|| format!("device lookup for {target}"))?
         .ok_or_else(|| anyhow!("no such device: {target}"))?;
 
     let safety = bootsmith_disk::SafetyConfig {
         force: config.force,
     };
-    info.check_writable(&safety)
-        .map_err(|e| anyhow!("safety check failed: {e}"))?;
+    info.check_writable(&safety).context("safety check")?;
 
     if plan.iso_bytes > info.size_bytes {
         bail!(
@@ -78,11 +83,11 @@ pub fn run(config: &Config) -> Result<()> {
         BootMode::UefiOnly => bail!("UEFI-only mode lands in v0.4"),
     };
 
-    print_next_steps(plan.mode);
+    print_next_steps(plan.mode, config.ahci_driver_dir.is_some());
     Ok(())
 }
 
-fn print_next_steps(mode: BootMode) {
+fn print_next_steps(mode: BootMode, ahci_driver_staged: bool) {
     println!();
     println!("================================================================");
     println!("NEXT STEPS");
@@ -111,9 +116,25 @@ fn print_next_steps(mode: BootMode) {
             println!("   (\"Continue XP GUI-mode setup from internal HDD\").");
             println!("6. GUI-mode setup finishes; the machine reboots into Windows.");
             println!();
-            println!("Note: target SATA controller must be in BIOS ATA mode, not AHCI.");
-            println!("XP SP3 ships no inbox AHCI driver. AHCI support is a separate");
-            println!("1.0 blocker -- see docs/BACKLOG.md.");
+            if ahci_driver_staged {
+                println!("AHCI: a vendor F6 driver pack was slipstreamed into I386 of the");
+                println!("staged XP.ISO via --ahci-driver-dir. XP text-mode setup treats");
+                println!("the driver as inbox: its PCI HwIDs were added to TXTSETUP.SIF's");
+                println!("[HardwareIdsDatabase] and PnP auto-binds the matching controller");
+                println!("during enumeration. **No F6 prompt is needed** -- the target SATA");
+                println!("controller can stay in AHCI mode and the internal disk will");
+                println!("appear at the partition screen automatically.");
+                println!();
+                println!("If the disk still doesn't appear, the pack doesn't cover this");
+                println!("chipset -- check the PCI device ID (`lspci -nn` on Linux) and");
+                println!("pick a driver pack whose TXTSETUP.OEM lists a matching HwID.");
+                println!("See docs/AHCI_DRIVER.md.");
+            } else {
+                println!("Note: target SATA controller must be in BIOS ATA mode, not AHCI.");
+                println!("XP SP3 ships no inbox AHCI driver. To install on an AHCI-only");
+                println!("system, re-run with --ahci-driver-dir <vendor F6 folder>;");
+                println!("see docs/AHCI_DRIVER.md.");
+            }
         }
         BootMode::Windows2000 => {
             println!("Windows 2000 install via GRUB4DOS + SVBus:");
@@ -218,7 +239,7 @@ fn resolve_mode(config: &Config) -> Result<BootMode> {
         ModeRequest::Auto => {
             let detected = bootsmith_iso::classify(&config.iso_path).map_err(|e| {
                 anyhow!(
-                    "could not auto-classify ISO ({e}); pass --type=windows|windows-ntxp|hybrid|linux|uefi explicitly"
+                    "could not auto-classify ISO ({e}); pass --type=windows|windows-ntxp|windows-2000|hybrid|linux|uefi explicitly"
                 )
             })?;
             Ok(detected)

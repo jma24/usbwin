@@ -4,7 +4,7 @@
 
 use anyhow::{anyhow, bail, Context, Result};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output};
 
 pub fn unmount_disk(bsd_path: &str) -> Result<()> {
     run_diskutil(&["unmountDisk", bsd_path])
@@ -47,10 +47,13 @@ pub fn newfs_msdos_fat32(partition_path: &str, label: &str) -> Result<()> {
     // setupldr / bootmgr variants we care about. The cost (more FAT
     // entries, slightly slower large-file writes) is negligible for our
     // ≤4 GB ISO payloads.
+    let args = ["-F", "32", "-c", "8", "-v", label, partition_path];
+    tracing::debug!(cmd = "newfs_msdos", ?args, "spawn");
     let output = Command::new("newfs_msdos")
-        .args(["-F", "32", "-c", "8", "-v", label, partition_path])
+        .args(args)
         .output()
         .with_context(|| format!("spawning newfs_msdos for {partition_path}"))?;
+    log_output("newfs_msdos", &output);
     if !output.status.success() {
         bail!(
             "newfs_msdos failed: {}",
@@ -67,11 +70,13 @@ pub fn newfs_msdos_fat32(partition_path: &str, label: &str) -> Result<()> {
 /// ISO. We don't pin the mount point; macOS picks a fresh one each time,
 /// which is fine since we read it back from hdiutil's output.
 pub fn hdiutil_attach_iso(iso: &Path) -> Result<PathBuf> {
+    tracing::debug!(cmd = "hdiutil", iso = %iso.display(), "attach -nobrowse -readonly");
     let output = Command::new("hdiutil")
         .args(["attach", "-nobrowse", "-readonly"])
         .arg(iso)
         .output()
         .with_context(|| format!("hdiutil attach {}", iso.display()))?;
+    log_output("hdiutil attach", &output);
     if !output.status.success() {
         bail!(
             "hdiutil attach failed: {}",
@@ -87,16 +92,19 @@ pub fn hdiutil_attach_iso(iso: &Path) -> Result<PathBuf> {
                 .map(PathBuf::from)
         })
         .ok_or_else(|| anyhow!("hdiutil attach gave no /Volumes/ mount: {stdout}"))?;
+    tracing::debug!(mount = %mount_point.display(), "hdiutil attach OK");
     Ok(mount_point)
 }
 
 /// Detach an ISO mount point that came from `hdiutil_attach_iso`.
 pub fn hdiutil_detach(mount_point: &Path) -> Result<()> {
+    tracing::debug!(cmd = "hdiutil", mount = %mount_point.display(), "detach");
     let output = Command::new("hdiutil")
         .arg("detach")
         .arg(mount_point)
         .output()
         .with_context(|| format!("hdiutil detach {}", mount_point.display()))?;
+    log_output("hdiutil detach", &output);
     if !output.status.success() {
         bail!(
             "hdiutil detach failed: {}",
@@ -155,11 +163,13 @@ pub fn find_ms_sys() -> Result<PathBuf> {
 /// the partial-sector write and ms-sys reports "Failed writing ..." with
 /// no further detail. Validated empirically 2026-05-19.
 pub fn ms_sys_mbr7(ms_sys: &Path, buffered_disk_path: &str) -> Result<()> {
+    tracing::debug!(cmd = %ms_sys.display(), target_path = buffered_disk_path, "ms-sys --mbr7");
     let output = Command::new(ms_sys)
         .args(["-f", "--mbr7"])
         .arg(buffered_disk_path)
         .output()
         .with_context(|| format!("invoking ms-sys --mbr7 {buffered_disk_path}"))?;
+    log_output("ms-sys --mbr7", &output);
     if !output.status.success() {
         bail!("ms-sys --mbr7 failed: {}", format_ms_sys_failure(&output));
     }
@@ -192,11 +202,13 @@ fn format_ms_sys_failure(out: &std::process::Output) -> String {
 /// sub-sector writes that silently fail on /dev/rdiskN — use buffered
 /// `/dev/diskN` for the partition path.
 pub fn ms_sys_fat32pe(ms_sys: &Path, partition_buffered_path: &str) -> Result<()> {
+    tracing::debug!(cmd = %ms_sys.display(), target_path = partition_buffered_path, "ms-sys --fat32pe");
     let output = Command::new(ms_sys)
         .args(["-f", "--fat32pe"])
         .arg(partition_buffered_path)
         .output()
         .with_context(|| format!("invoking ms-sys --fat32pe {partition_buffered_path}"))?;
+    log_output("ms-sys --fat32pe", &output);
     if !output.status.success() {
         bail!("ms-sys --fat32pe failed: {}", format_ms_sys_failure(&output));
     }
@@ -204,10 +216,12 @@ pub fn ms_sys_fat32pe(ms_sys: &Path, partition_buffered_path: &str) -> Result<()
 }
 
 fn run_diskutil(args: &[&str]) -> Result<()> {
+    tracing::debug!(cmd = "diskutil", args = %args.join(" "), "spawn");
     let output = Command::new("diskutil")
         .args(args)
         .output()
         .with_context(|| format!("spawning `diskutil {}`", args.join(" ")))?;
+    log_output(&format!("diskutil {}", args.join(" ")), &output);
     if !output.status.success() {
         bail!(
             "diskutil {} failed: {}",
@@ -216,4 +230,27 @@ fn run_diskutil(args: &[&str]) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// Emit captured stdout/stderr at debug. Surfaces useful detail under
+/// `--verbose` without polluting normal output. Logs stderr at warn when
+/// non-empty even on success (some tools warn but exit 0).
+fn log_output(label: &str, out: &Output) {
+    let status = out
+        .status
+        .code()
+        .map(|c| c.to_string())
+        .unwrap_or_else(|| "signal".into());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let stdout = stdout.trim();
+    let stderr = stderr.trim();
+    if !stdout.is_empty() {
+        tracing::debug!(target: "bootsmith", cmd = label, status, stdout, "exit");
+    } else {
+        tracing::debug!(target: "bootsmith", cmd = label, status, "exit");
+    }
+    if !stderr.is_empty() && out.status.success() {
+        tracing::warn!(target: "bootsmith", cmd = label, stderr, "stderr on success");
+    }
 }

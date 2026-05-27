@@ -22,10 +22,11 @@ use bootsmith_core::{BootRecordImpl, ModeRequest, UnattendedConfig};
     name = "bootsmith",
     version,
     about = "Native arm64 macOS bootable-USB writer.",
-    long_about = "Writes Windows 2000, XP, and Windows 7 install USB sticks \
-                  on Apple Silicon without Rosetta. Hybrid raw ISO writes are \
-                  available as a utility path, but generic boot-loader support \
-                  is not the v1 focus. See https://github.com/jma24/bootsmith."
+    long_about = "Writes Windows XP, Vista, 7, 8, 10, and 11 install USB \
+                  sticks on Apple Silicon without Rosetta. Windows 2000 \
+                  support ships in 1.1. Hybrid raw ISO writes are available \
+                  as a utility path, but generic boot-loader support is not \
+                  the v1 focus. See https://github.com/jma24/bootsmith."
 )]
 struct Cli {
     /// Path to the ISO file.
@@ -93,6 +94,14 @@ struct Cli {
     /// Windows setup timezone index for WINNT.SIF.
     #[arg(long = "timezone")]
     timezone: Option<u16>,
+
+    /// Path to a vendor-shaped F6 driver folder to merge with the FiraDisk
+    /// floppy for XP text-mode AHCI/SATA support. Must contain `txtsetup.oem`
+    /// plus the `.sys`/`.inf`/`.cat` files it references. bootsmith does not
+    /// bundle storage drivers; users supply the vendor's F6 directory. See
+    /// `docs/AHCI_DRIVER.md` for the Dell E6410 + Intel iaStor walkthrough.
+    #[arg(long = "ahci-driver-dir")]
+    ahci_driver_dir: Option<PathBuf>,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
@@ -142,14 +151,20 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     let unattended = build_unattended_config(&cli);
 
-    let filter = if cli.verbose {
-        "bootsmith=debug,info"
+    // RUST_LOG wins when set; otherwise `--verbose` flips on debug for
+    // our own crates and stays quiet elsewhere. Default keeps stderr
+    // clean — only warnings and errors surface unless the user asks.
+    let default_filter = if cli.verbose {
+        "bootsmith=debug,bootsmith_core=debug,bootsmith_disk=debug,bootsmith_iso=debug"
     } else {
-        "bootsmith=info,warn"
+        "bootsmith=warn,bootsmith_core=warn,bootsmith_disk=warn,bootsmith_iso=warn"
     };
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default_filter));
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::new(filter))
+        .with_env_filter(env_filter)
         .with_target(false)
+        .with_writer(std::io::stderr)
         .init();
 
     let config = bootsmith_core::Config {
@@ -163,9 +178,10 @@ fn main() -> ExitCode {
         verbose: cli.verbose,
         boot_record_impl: cli.boot_record.into(),
         unattended,
+        ahci_driver_dir: cli.ahci_driver_dir,
     };
 
-    tracing::info!(
+    tracing::debug!(
         iso = %config.iso_path.display(),
         device = %config.device_path.display(),
         mode = ?config.mode,

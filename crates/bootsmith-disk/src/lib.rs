@@ -22,7 +22,9 @@ pub mod raw;
 
 #[derive(Debug, Error)]
 pub enum DiskError {
-    #[error("I/O: {0}")]
+    // No `{0}` in Display: anyhow's `{:#}` chain printer walks
+    // .source() and would otherwise print the io::Error twice.
+    #[error("disk I/O")]
     Io(#[from] std::io::Error),
 
     #[error("refusing to write to {0}: this looks like the boot disk")]

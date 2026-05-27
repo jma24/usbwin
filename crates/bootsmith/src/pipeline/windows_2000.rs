@@ -388,7 +388,7 @@ fn human_secs(secs: u64) -> String {
 }
 
 fn anyhow_from_core(e: bootsmith_core::Error) -> anyhow::Error {
-    anyhow!(e)
+    anyhow::Error::new(e)
 }
 
 #[cfg(test)]

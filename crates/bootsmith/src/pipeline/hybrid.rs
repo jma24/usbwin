@@ -163,5 +163,5 @@ fn progress_bar(total: u64, op: &str) -> ProgressBar {
 }
 
 fn anyhow_from_core(e: bootsmith_core::Error) -> anyhow::Error {
-    anyhow::anyhow!("{e}")
+    anyhow::Error::new(e)
 }

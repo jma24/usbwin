@@ -23,6 +23,13 @@
 //! `WindowsNtXp`; absence (but still NT5-class) = Win2k →
 //! `Windows2000`. The two modes share the GRUB4DOS chain shape but
 //! differ in the textmode ramdisk driver (FiraDisk vs SVBus).
+//!
+//! Vista (and a handful of other Microsoft install DVDs) ship a stub
+//! ISO9660 whose PVD root contains only `README.TXT`; the real install
+//! tree lives in UDF. The [`udf`] module walks that tree so the classifier
+//! still sees `BOOTMGR` and `SOURCES/INSTALL.WIM` on those discs.
+
+mod udf;
 
 use std::collections::BTreeSet;
 use std::fs::File;
@@ -53,7 +60,10 @@ pub type Result<T> = std::result::Result<T, IsoError>;
 /// Inspect an ISO and return the boot mode that should be used.
 pub fn classify(path: &Path) -> Result<BootMode> {
     let mut iso = IsoReader::open(path)?;
-    let entries = iso.collect_paths()?;
+    let mut entries = iso.collect_paths()?;
+    if let Some(udf_entries) = udf::collect_paths(path) {
+        entries.extend(udf_entries);
+    }
 
     if is_nt5_install_media(&entries) {
         return Ok(if has_win51_or_win52_marker(&entries) {

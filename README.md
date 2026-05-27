@@ -15,11 +15,11 @@ textmode storage drivers.
 | Mode | State |
 |------|-------|
 | Hybrid (Linux/BSD ISO raw write) | ✅ working since v0.1; maintained as a utility path, not part of the v1 Windows scope. |
-| Windows 7+ (BOOTMGR chain) | ✅ hardware-verified on Dell E6410 (2026-05-19) with both `--boot-record=bootrec` (default) and `--boot-record=ms-sys`. Same code path covers Win 8/10/11. |
+| Windows 7+ (BOOTMGR chain) | ✅ hardware-verified on Dell E6410 (2026-05-19) with both `--boot-record=bootrec` (default) and `--boot-record=ms-sys`. Same code path covers Vista and Win 8/10/11 — auto-classifier routes any ISO with `\bootmgr` + `\sources\install.wim` here. Vista hardware-verified on E6410 (2026-05-26). |
 | Windows NT/XP (`windows-ntxp`) | ✅ GRUB4DOS + FiraDisk production path hardware-verified end-to-end on Dell E6410 (2026-05-21). |
 | Windows 2000 | 1.0 target; auto-detection exists, install support still pending. |
 | XP/2000 unattended installs | 1.0 target. |
-| XP/2000 AHCI textmode storage | 1.0 target. |
+| XP AHCI textmode storage | ✅ hardware-verified on Dell E6410 (2026-05-26) with BIOS SATA mode set to AHCI and the Dell `R274723` (Intel iaStor 9.6.4.1002) driver pack. `--ahci-driver-dir <path>` slipstreams a BYO vendor F6 driver pack into the staged XP.ISO's I386 directory and patches `TXTSETUP.SIF`/`DOSNET.INF` so XP treats the driver as inbox. See [`docs/AHCI_DRIVER.md`](docs/AHCI_DRIVER.md). |
 | Linux/isolinux | deferred; not a v1 goal. |
 | UEFI-only | deferred; not a v1 goal. |
 
@@ -81,9 +81,11 @@ repo — run them there.
 
 ```sh
 bootsmith <iso-path> <device>
-       [--type=auto|windows|windows-ntxp|linux|hybrid|uefi]
+       [--type=auto|windows|windows-ntxp|windows-2000|linux|hybrid|uefi]
        [--label=<volume-label>]
        [--boot-record=bootrec|ms-sys]
+       [--unattended] [--product-key=...] [--admin-password=...] ...
+       [--ahci-driver-dir=<f6-folder>]
        [--dry-run]
        [--force]
        [--verbose]

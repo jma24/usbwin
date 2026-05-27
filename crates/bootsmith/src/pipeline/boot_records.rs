@@ -16,7 +16,7 @@
 //! Decoupling the byte production from the I/O makes golden testing
 //! tractable. The actual write-to-device still lives in the pipeline.
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 
 const SECTOR_SIZE: u64 = 512;
 
@@ -29,7 +29,7 @@ pub fn build_mbr_win7(disk_size_bytes: u64) -> Result<Vec<u8>> {
     let disk_sectors = disk_size_bytes / SECTOR_SIZE;
     bootrec::mbr_win7(disk_sectors)
         .map(|arr| arr.to_vec())
-        .map_err(|e| anyhow!("bootrec::mbr_win7: {e}"))
+        .context("bootrec::mbr_win7")
 }
 
 /// Win 7+ multi-sector FAT32 PBR (BOOTMGR-loading). Takes the formatter's
@@ -40,7 +40,7 @@ pub fn splice_pbr_bootmgr(formatter_reserved: &[u8]) -> Result<Vec<u8>> {
         formatter_reserved,
         bootrec::FAT32_PBR_BOOTMGR_MULTI_BOOT,
     )
-    .map_err(|e| anyhow!("bootrec::splice_fat32_pbr_multi: {e}"))
+    .context("bootrec::splice_fat32_pbr_multi")
 }
 
 /// Precondition check: bootrec was built with embedded boot blobs, so the

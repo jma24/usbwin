@@ -19,7 +19,9 @@ pub use plan::{BootMode, WritePlan};
 
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error("I/O error: {0}")]
+    // No `{0}` in Display: anyhow's `{:#}` chain printer walks
+    // .source() and would otherwise print the io::Error twice.
+    #[error("I/O error")]
     Io(#[from] std::io::Error),
 
     #[error("device refuses to be written: {0}")]
@@ -69,6 +71,11 @@ pub struct Config {
     /// Optional NT5 answer-file settings. Currently consumed only by the
     /// Windows 2000/XP GRUB4DOS + FiraDisk path.
     pub unattended: Option<UnattendedConfig>,
+    /// Optional path to a vendor-shaped F6 driver folder (e.g. Intel iaStor)
+    /// to be merged with the FiraDisk floppy for XP textmode AHCI support.
+    /// User-supplied; bootsmith does not bundle any third-party storage driver.
+    /// Expects `txtsetup.oem` plus the `.sys`/`.inf`/`.cat` files it lists.
+    pub ahci_driver_dir: Option<PathBuf>,
 }
 
 #[derive(Clone)]

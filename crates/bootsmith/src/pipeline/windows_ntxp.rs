@@ -20,6 +20,8 @@ use bootsmith_disk::DeviceInfo;
 use super::diskutil;
 use super::ntxp_floppy;
 use super::ntxp_iso;
+use super::ntxp_slipstream;
+use super::ntxp_txtsetup;
 
 const SECTOR_SIZE: u64 = 512;
 const PARTITION_START_LBA: u32 = 2048;
@@ -74,26 +76,45 @@ pub fn run(plan: &WritePlan, info: &DeviceInfo, config: &Config) -> Result<()> {
     let bsd_path = info.path.replace("/dev/r", "/dev/");
     let partition_raw = format!("{}s1", info.path);
 
+    tracing::debug!(
+        raw = %info.path,
+        buffered = %bsd_path,
+        partition_raw,
+        ahci = config.ahci_driver_dir.is_some(),
+        unattended = config.unattended.is_some(),
+        "windows-ntxp pipeline begin"
+    );
+
     validate_assets()?;
     validate_capacity(plan, info)?;
 
+    tracing::debug!("step 1/7: unmount disk before GRUB4DOS MBR write");
     diskutil::unmount_disk(&bsd_path).context("unmount before GRUB4DOS MBR write")?;
+    tracing::debug!("step 2/7: write GRUB4DOS MBR + boot track");
     write_grub4dos_mbr_track(info, config.verify).context("writing GRUB4DOS MBR/boot track")?;
 
-    let _ = diskutil::unmount_disk(&bsd_path);
+    tracing::debug!("step 3/7: re-read partition table via unmount/mount cycle");
+    if let Err(e) = diskutil::unmount_disk(&bsd_path) {
+        tracing::debug!(error = %e, "first unmount errored (expected if nothing was mounted)");
+    }
     diskutil::mount_disk(&bsd_path).context("mount after partition write")?;
     diskutil::unmount_disk_force(&bsd_path)
         .context("force-unmount before format (disk arbitration race)")?;
 
+    tracing::debug!(partition = %partition_raw, label = %plan.label, "step 4/7: newfs_msdos FAT32");
     diskutil::newfs_msdos_fat32(&partition_raw, &plan.label)
         .with_context(|| format!("formatting {partition_raw} as FAT32"))?;
 
+    tracing::debug!("step 5/7: mount formatted partition");
     diskutil::mount_disk(&bsd_path).context("mount after format")?;
     let usb_mount = find_mount_for_label(&plan.label)
         .ok_or_else(|| anyhow!("formatted partition didn't appear in /Volumes"))?;
+    tracing::debug!(mount = %usb_mount.display(), "USB mount resolved");
 
+    tracing::debug!("step 6/7: stage GRLDR / menu.lst / XP.ISO / FIRADISK.IMA");
     stage_files(plan, &usb_mount, config).context("staging GRUB4DOS/FiraDisk XP payload")?;
 
+    tracing::debug!("step 7/7: unmount + eject");
     diskutil::unmount_disk(&bsd_path).context("unmount after staging files")?;
     diskutil::eject(&bsd_path).context("eject after write")?;
 
@@ -190,32 +211,269 @@ fn patch_partition_table(mbr_track: &mut [u8], disk_size_bytes: u64) -> Result<(
 }
 
 fn stage_files(plan: &WritePlan, usb_mount: &Path, config: &Config) -> Result<()> {
+    tracing::debug!(size = GRLDR.len(), "write GRLDR");
     std::fs::write(usb_mount.join("GRLDR"), GRLDR)
         .with_context(|| format!("writing {}", usb_mount.join("GRLDR").display()))?;
+    tracing::debug!(size = MENU_LST.len(), "write menu.lst");
     std::fs::write(usb_mount.join("menu.lst"), MENU_LST)
         .with_context(|| format!("writing {}", usb_mount.join("menu.lst").display()))?;
     let xp_iso = usb_mount.join("XP.ISO");
+    tracing::debug!(src = %plan.iso_path.display(), dest = %xp_iso.display(), "copy ISO → XP.ISO");
     copy_iso_as_xp_iso(&plan.iso_path, &xp_iso)?;
+
+    // FiraDisk floppy is the embedded image verbatim. The previous
+    // approach (merge user's --ahci-driver-dir TXTSETUP.OEM into the
+    // floppy, add the .sys/.inf/.cat files, generate a winnt.sif with
+    // [MassStorageDrivers] + OemPreinstall=Yes) hit XP setup error 18
+    // at oemdisk.c:1747 on real hardware. Research confirmed
+    // OemPreinstall=Yes requires $OEM$\Textmode\ on the install source
+    // (which the RAM-mapped ISO doesn't have) and that on-floppy
+    // [MassStorageDrivers] only auto-loads the [Defaults] entry anyway.
+    // The canonical XP-on-AHCI solution is slipstreaming iaStor into
+    // I386 of the install source itself -- handled below for the
+    // staged XP.ISO. The floppy stays single-purpose: FiraDisk only.
+    let mut firadisk = FIRADISK_IMA.to_vec();
+
+    if let Some(ahci_dir) = &config.ahci_driver_dir {
+        slipstream_ahci_into_iso(&xp_iso, ahci_dir)
+            .with_context(|| format!("slipstreaming AHCI drivers from {}", ahci_dir.display()))?;
+    }
+
+    // winnt.sif is ONLY generated when --unattended is set. An earlier
+    // attempt to auto-resolve the GUI-mode "browse to F:\i386\iaStor.sys"
+    // prompt by injecting a minimal sif with OemPnPDriversPath="i386"
+    // (even in interactive mode) caused a separate regression: GUI-mode
+    // setup started prompting for the `asms` side-by-side assembly
+    // folder mid-file-copy. The OemPnPDriversPath path semantics are
+    // looser than the docs imply and clearly interact with the
+    // file-copy logic in ways we don't fully understand. Until we have
+    // a verified-clean fix, the slipstream auto-loads iaStor in
+    // text-mode and the user clicks through one "browse" prompt at
+    // GUI-mode -- acceptable trade-off vs. breaking the install.
     if let Some(unattended) = &config.unattended {
         let sif = generate_winnt_sif(unattended);
-        let mut firadisk = FIRADISK_IMA.to_vec();
         ntxp_floppy::add_winnt_sif(&mut firadisk, sif.as_bytes())
             .context("injecting A:\\WINNT.SIF into FiraDisk floppy image")?;
-        std::fs::write(usb_mount.join("FIRADISK.IMA"), &firadisk)
-            .with_context(|| format!("writing {}", usb_mount.join("FIRADISK.IMA").display()))?;
-        println!("bootsmith: injected A:\\WINNT.SIF into staged FIRADISK.IMA");
-
         ntxp_iso::inject_winnt_sif(&xp_iso, sif.as_bytes())
             .with_context(|| format!("injecting I386/WINNT.SIF into {}", xp_iso.display()))?;
-        println!("bootsmith: injected I386/WINNT.SIF into staged XP.ISO for unattended setup");
-    } else {
-        std::fs::write(usb_mount.join("FIRADISK.IMA"), FIRADISK_IMA)
-            .with_context(|| format!("writing {}", usb_mount.join("FIRADISK.IMA").display()))?;
+        println!("bootsmith: injected A:\\WINNT.SIF and I386/WINNT.SIF for unattended setup");
     }
+
+    tracing::debug!(size = firadisk.len(), "write FIRADISK.IMA");
+    std::fs::write(usb_mount.join("FIRADISK.IMA"), &firadisk)
+        .with_context(|| format!("writing {}", usb_mount.join("FIRADISK.IMA").display()))?;
 
     let _ = std::process::Command::new("sync").status();
     println!("bootsmith: staged GRLDR, menu.lst, XP.ISO, FIRADISK.IMA");
     Ok(())
+}
+
+/// Slipstream a user-supplied F6 driver pack (e.g. Intel iaStor for AHCI)
+/// into the staged XP.ISO's `I386` directory and patch
+/// `I386\TXTSETUP.SIF` so XP text-mode setup treats the driver as inbox.
+/// This is the only auto-load mechanism that works for our RAM-mapped
+/// ISO + FiraDisk pipeline -- see the long comment in `stage_files`.
+///
+/// Steps:
+/// 1. Parse the user's TXTSETUP.OEM. Get the list of files to copy and
+///    the per-controller [HardwareIds.scsi.X] PCI ids.
+/// 2. Append each driver file (.sys, .inf, .cat) into I386 of the ISO.
+/// 3. Read I386/TXTSETUP.SIF, patch the four sections, write back via
+///    replace_file_in_i386 (it relocates since the file grows).
+fn slipstream_ahci_into_iso(xp_iso: &Path, ahci_dir: &Path) -> Result<()> {
+    if !ahci_dir.is_dir() {
+        bail!(
+            "--ahci-driver-dir {} is not a directory",
+            ahci_dir.display()
+        );
+    }
+    let oem_path = find_case_insensitive(ahci_dir, "txtsetup.oem")?
+        .ok_or_else(|| anyhow!("{} has no TXTSETUP.OEM", ahci_dir.display()))?;
+    let user_oem = std::fs::read_to_string(&oem_path)
+        .with_context(|| format!("read {}", oem_path.display()))?;
+
+    let referenced = ntxp_txtsetup::referenced_filenames(&user_oem)
+        .context("parse file list from user TXTSETUP.OEM")?;
+    if referenced.is_empty() {
+        bail!(
+            "user TXTSETUP.OEM at {} declares no driver files",
+            oem_path.display()
+        );
+    }
+    let hardware_ids = ntxp_txtsetup::hardware_ids(&user_oem)
+        .context("parse hardware IDs from user TXTSETUP.OEM")?;
+
+    // Resolve the storage service name from the user's [Files.scsi.X]
+    // driver= lines. Every controller in a typical Intel pack maps to
+    // the same service ("iaStor"); if they diverge we'd need multiple
+    // slipstream passes, which we don't currently support.
+    let services = collect_services(&user_oem)?;
+    if services.len() != 1 {
+        bail!(
+            "user TXTSETUP.OEM at {} declares multiple driver services ({:?}); \
+             slipstream currently supports one service per pack",
+            oem_path.display(),
+            services
+        );
+    }
+    let service = services.into_iter().next().unwrap();
+
+    // Display name: take it from the FIRST [scsi] entry whose
+    // [Files.scsi.X] uses this service. Falls back to the service name.
+    let display_name = ntxp_txtsetup::scsi_controllers(&user_oem)
+        .context("parse [scsi] controllers from user TXTSETUP.OEM")?
+        .into_iter()
+        .find(|c| {
+            c.driver
+                .as_deref()
+                .map(|f| {
+                    f.to_ascii_lowercase()
+                        .ends_with(&format!("{}.sys", service.to_ascii_lowercase()))
+                })
+                .unwrap_or(false)
+        })
+        .map(|c| c.display_name)
+        .unwrap_or_else(|| service.clone());
+
+    // 1. Append every referenced file into I386. macOS buffers the ISO
+    // copy from copy_iso_as_xp_iso aggressively, so the first sync_all
+    // inside append_file_to_i386 forces hundreds of MB of buffered
+    // data to flush -- visibly slow without a status line, since the
+    // iso progress bar already showed 100%.
+    //
+    // Attempt 2026-05-26: also duplicated each .sys at the ISO root so
+    // GUI-mode PnP's "Files Needed" dialog (which defaults to F:\)
+    // would auto-find iaStor.sys. Caused the same asms-folder prompt
+    // regression that OemPnPDriversPath had earlier. Any modification
+    // that touches the ISO root directory layout in a way XP doesn't
+    // expect seems to disturb GUI-mode setup's side-by-side assembly
+    // copy phase. Reverted; one click at GUI-mode is the 1.0 trade.
+    let total_steps = referenced.len() + 2;
+    let mut step = 1usize;
+    for name in &referenced {
+        let path = find_case_insensitive(ahci_dir, name)?
+            .ok_or_else(|| anyhow!("{} is missing {}", ahci_dir.display(), name))?;
+        let contents = std::fs::read(&path).with_context(|| format!("read {}", path.display()))?;
+        let iso_name = iso_long_name(name);
+        println!(
+            "  slipstream [{step}/{total_steps}] inject I386/{} ({:.0} KiB)",
+            iso_name,
+            contents.len() as f64 / 1024.0,
+        );
+        ntxp_iso::append_file_to_i386(xp_iso, iso_name.as_bytes(), &contents)
+            .with_context(|| format!("append {} into I386 of {}", name, xp_iso.display()))?;
+        step += 1;
+    }
+
+    // 2. Read existing TXTSETUP.SIF, patch, replace. XP SP3 master ISO
+    // PVD records use bare names (no `;1` version suffix); iso_name_eq
+    // accepts either form on the expected side.
+    println!("  slipstream [{step}/{total_steps}] patch I386/TXTSETUP.SIF");
+    step += 1;
+    let existing_sif = ntxp_iso::read_file_from_i386(xp_iso, b"TXTSETUP.SIF")
+        .context("read existing I386/TXTSETUP.SIF from staged XP.ISO")?
+        .ok_or_else(|| anyhow!("staged XP.ISO has no I386/TXTSETUP.SIF"))?;
+    let existing_sif_text = std::str::from_utf8(&existing_sif)
+        .context("I386/TXTSETUP.SIF is not valid ASCII/UTF-8")?;
+    let patched = ntxp_slipstream::patch_txtsetup_sif(
+        existing_sif_text,
+        &service,
+        &display_name,
+        &referenced,
+        &hardware_ids,
+    )
+    .context("patch I386/TXTSETUP.SIF for AHCI slipstream")?;
+    ntxp_iso::replace_file_in_i386(xp_iso, b"TXTSETUP.SIF", patched.text.as_bytes())
+        .context("write patched I386/TXTSETUP.SIF back to staged XP.ISO")?;
+
+    // 3. Patch DOSNET.INF [Files] manifest. TXTSETUP.SIF alone tells
+    // text-mode setup ABOUT the driver (and ramdrive-copies it from
+    // [SourceDisksFiles]), but the regular file-copy phase consults
+    // DOSNET.INF to decide what's available on the install source.
+    // Without the d1,iastor.sys entries setup errors with "The file
+    // iaStor.sys could not be found" mid-text-mode.
+    println!("  slipstream [{step}/{total_steps}] patch I386/DOSNET.INF");
+    let existing_dosnet = ntxp_iso::read_file_from_i386(xp_iso, b"DOSNET.INF")
+        .context("read existing I386/DOSNET.INF from staged XP.ISO")?
+        .ok_or_else(|| anyhow!("staged XP.ISO has no I386/DOSNET.INF"))?;
+    let existing_dosnet_text = std::str::from_utf8(&existing_dosnet)
+        .context("I386/DOSNET.INF is not valid ASCII/UTF-8")?;
+    let patched_dosnet = ntxp_slipstream::patch_dosnet_inf(existing_dosnet_text, &referenced)
+        .context("patch I386/DOSNET.INF for AHCI slipstream")?;
+    ntxp_iso::replace_file_in_i386(xp_iso, b"DOSNET.INF", patched_dosnet.as_bytes())
+        .context("write patched I386/DOSNET.INF back to staged XP.ISO")?;
+
+    println!(
+        "bootsmith: slipstreamed AHCI driver \"{}\" ({}) into XP.ISO: \
+         {} files + {} PCI hardware IDs (TXTSETUP.SIF + DOSNET.INF patched)",
+        patched.additions.display_name,
+        patched.additions.service,
+        patched.additions.files.len(),
+        patched.additions.hardware_id_count,
+    );
+    Ok(())
+}
+
+/// Distinct service names declared by the `[Files.scsi.X]` `driver=`
+/// lines of a txtsetup.oem. The third comma-separated field of each
+/// `driver = diskN, file.sys, ServiceName` line is the service.
+fn collect_services(oem: &str) -> Result<Vec<String>> {
+    let controllers = ntxp_txtsetup::scsi_controllers(oem)
+        .context("parse [scsi] controllers from user TXTSETUP.OEM")?;
+    // We need the service name from the raw `driver = diskN, file.sys,
+    // ServiceName` line, which scsi_controllers doesn't currently
+    // expose. Re-walk [Files.scsi.X] sections here for it.
+    let mut services: Vec<String> = Vec::new();
+    for c in &controllers {
+        let section_header = format!("[Files.scsi.{}]", c.id);
+        let Some(start) = oem.find(&section_header) else {
+            continue;
+        };
+        let body_start = start + section_header.len();
+        let body_end = oem[body_start..]
+            .find("\n[")
+            .map(|n| body_start + n)
+            .unwrap_or(oem.len());
+        for line in oem[body_start..body_end].lines() {
+            let trimmed = line.trim_start();
+            if let Some(rest) = trimmed
+                .strip_prefix("driver")
+                .map(|r| r.trim_start())
+                .filter(|r| r.starts_with('='))
+            {
+                let rhs = rest[1..].trim();
+                let mut fields = rhs.split(',');
+                let _disk = fields.next();
+                let _file = fields.next();
+                if let Some(svc) = fields.next() {
+                    let svc = svc.trim().to_string();
+                    if !svc.is_empty() && !services.iter().any(|s| s.eq_ignore_ascii_case(&svc)) {
+                        services.push(svc);
+                    }
+                }
+            }
+        }
+    }
+    if services.is_empty() {
+        bail!("no driver service names found in [Files.scsi.X] sections");
+    }
+    Ok(services)
+}
+
+/// Convert a long-form filename to the ISO9660 record name used inside
+/// `I386`: uppercase, no version suffix (XP SP3 masters use bare names).
+fn iso_long_name(name: &str) -> String {
+    name.to_ascii_uppercase()
+}
+
+fn find_case_insensitive(dir: &Path, name: &str) -> Result<Option<PathBuf>> {
+    for entry in std::fs::read_dir(dir).with_context(|| format!("readdir {}", dir.display()))? {
+        let entry = entry.with_context(|| format!("read entry in {}", dir.display()))?;
+        if entry.file_name().to_string_lossy().eq_ignore_ascii_case(name) {
+            return Ok(Some(entry.path()));
+        }
+    }
+    Ok(None)
 }
 
 fn copy_iso_as_xp_iso(src: &Path, dest: &Path) -> Result<()> {
@@ -360,7 +618,7 @@ fn human_secs(secs: u64) -> String {
 }
 
 fn anyhow_from_core(e: bootsmith_core::Error) -> anyhow::Error {
-    anyhow!(e)
+    anyhow::Error::new(e)
 }
 
 #[cfg(test)]
@@ -417,6 +675,13 @@ mod tests {
         assert!(sif.contains("ComputerName=*\r\n"));
         assert!(!sif.contains("DestinationDiskNumber"));
         assert!(!sif.contains("DestinationPartitionNumber"));
+        assert!(!sif.contains("OemPreinstall"));
+        // OemPnPDriversPath="i386" auto-resolved the GUI-mode iaStor
+        // browse prompt but caused a worse regression: GUI-mode started
+        // prompting for the `asms` side-by-side assembly folder during
+        // file copy. Keep it out until we understand the asms
+        // interaction.
+        assert!(!sif.contains("OemPnPDriversPath"));
     }
 
     #[test]
@@ -436,3 +701,4 @@ mod tests {
         assert!(sif.contains("ComputerName=\"XPTEST\"\r\n"));
     }
 }
+

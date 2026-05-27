@@ -38,6 +38,15 @@ pub fn run(plan: &WritePlan, info: &DeviceInfo, config: &Config) -> Result<()> {
     let partition_raw = format!("{}s1", info.path);
     let partition_bsd = format!("{bsd_path}s1");
 
+    tracing::debug!(
+        raw = %info.path,
+        buffered = %bsd_path,
+        partition_raw,
+        partition_buffered = %partition_bsd,
+        backend = config.boot_record_impl.as_str(),
+        "windows pipeline begin"
+    );
+
     // Resolve the ms-sys binary up front (only if we'll actually use it),
     // so we fail before any destructive write.
     let ms_sys = match config.boot_record_impl {
@@ -49,9 +58,11 @@ pub fn run(plan: &WritePlan, info: &DeviceInfo, config: &Config) -> Result<()> {
     };
 
     // 1. Unmount everything mounted from this disk.
+    tracing::debug!("step 1/11: unmount disk before partition write");
     diskutil::unmount_disk(&bsd_path).context("unmount before partition write")?;
 
     // 2. Write the MBR's partition table (boot code overwritten by ms-sys --mbr7 later).
+    tracing::debug!("step 2/11: write MBR sector");
     write_mbr_sector(info)?;
 
     // 3. Kernel needs to re-read the partition table. The simplest portable
@@ -59,36 +70,49 @@ pub fn run(plan: &WritePlan, info: &DeviceInfo, config: &Config) -> Result<()> {
     //    unmount uses `force` because disk arbitration auto-mounts any
     //    recognized FAT32 (e.g. left over from a prior failed run) before
     //    we get the chance to format, and a plain unmount races.
-    let _ = diskutil::unmount_disk(&bsd_path);
+    tracing::debug!("step 3/11: re-read partition table via unmount/mount cycle");
+    if let Err(e) = diskutil::unmount_disk(&bsd_path) {
+        tracing::debug!(error = %e, "step 3 first unmount errored (expected if nothing was mounted)");
+    }
     diskutil::mount_disk(&bsd_path).context("mount after partition write")?;
     diskutil::unmount_disk_force(&bsd_path)
         .context("force-unmount before format (disk arbitration race)")?;
 
     // 4. Format the partition.
+    tracing::debug!(partition = %partition_raw, label = %plan.label, "step 4/11: newfs_msdos FAT32");
     diskutil::newfs_msdos_fat32(&partition_raw, &plan.label)
         .with_context(|| format!("formatting {partition_raw} as FAT32"))?;
 
     // 5. Mount the freshly-formatted partition so we can copy files into it.
+    tracing::debug!("step 5/11: mount formatted partition");
     diskutil::mount_disk(&bsd_path).context("mount after format")?;
     let usb_mount = find_mount_for_label(&plan.label)
         .ok_or_else(|| anyhow!("formatted partition didn't appear in /Volumes"))?;
+    tracing::debug!(mount = %usb_mount.display(), "USB mount resolved");
 
     // 6. Attach the ISO.
+    tracing::debug!(iso = %plan.iso_path.display(), "step 6/11: hdiutil attach ISO");
     let iso_mount = diskutil::hdiutil_attach_iso(&plan.iso_path)
         .with_context(|| format!("attaching ISO {}", plan.iso_path.display()))?;
 
     // 7. Copy ISO contents -> USB.
+    tracing::debug!(src = %iso_mount.display(), dest = %usb_mount.display(), "step 7/11: copy ISO contents");
     let copy_result = copy_iso_contents(&iso_mount, &usb_mount);
 
     // 8. Detach the ISO regardless of copy outcome.
-    let _ = diskutil::hdiutil_detach(&iso_mount);
+    tracing::debug!("step 8/11: detach ISO");
+    if let Err(e) = diskutil::hdiutil_detach(&iso_mount) {
+        tracing::warn!(error = %e, mount = %iso_mount.display(), "hdiutil detach failed (continuing)");
+    }
     copy_result.context("copying ISO contents to USB")?;
 
     // 9. Unmount the USB so we can write the boot records.
+    tracing::debug!("step 9/11: unmount USB before MBR/PBR write");
     diskutil::unmount_disk(&bsd_path).context("unmount before MBR/PBR write")?;
 
     // 10. Write the Win 7 boot records.
     //     MBR (whole-sector, raw OK) + FAT32 BOOTMGR PBR (multi-sector).
+    tracing::debug!(backend = config.boot_record_impl.as_str(), "step 10/11: write boot records");
     match config.boot_record_impl {
         BootRecordImpl::MsSys => {
             let ms_sys = ms_sys.as_ref().expect("ms-sys resolved above");
@@ -115,7 +139,10 @@ pub fn run(plan: &WritePlan, info: &DeviceInfo, config: &Config) -> Result<()> {
     }
 
     // 11. Unmount + eject.
-    let _ = diskutil::unmount_disk(&bsd_path);
+    tracing::debug!("step 11/11: unmount + eject");
+    if let Err(e) = diskutil::unmount_disk(&bsd_path) {
+        tracing::debug!(error = %e, "pre-eject unmount errored (expected if disk arbitration already unmounted)");
+    }
     diskutil::eject(&bsd_path).context("eject after write")?;
 
     println!(
@@ -191,6 +218,11 @@ fn copy_iso_contents(iso_mount: &Path, usb_mount: &Path) -> Result<()> {
     let entries = walk_files(iso_mount)?;
     let total_bytes: u64 = entries.iter().map(|e| e.size).sum();
     let total_files = entries.iter().filter(|e| !e.is_dir).count() as u64;
+    tracing::debug!(
+        files = total_files,
+        bytes = total_bytes,
+        "starting ISO copy"
+    );
 
     // Two parallel bars. install.wim dominates the byte count and finishes
     // long before the thousands of small files do; one bar can't honestly
@@ -232,6 +264,7 @@ fn copy_iso_contents(iso_mount: &Path, usb_mount: &Path) -> Result<()> {
         }
         let src = iso_mount.join(entry.rel.as_path());
         let dest = usb_mount.join(entry.rel.as_path());
+        tracing::debug!(rel = %entry.rel.display(), size = entry.size, "copy file");
 
         // Chunked copy with intra-file progress updates. std::fs::copy is
         // tempting (one syscall, uses macOS copyfile) but for files larger
@@ -424,5 +457,5 @@ fn walk_recursive(root: &Path, dir: &Path, out: &mut Vec<CopyEntry>) -> Result<(
 }
 
 fn anyhow_from_core(e: bootsmith_core::Error) -> anyhow::Error {
-    anyhow!("{e}")
+    anyhow::Error::new(e)
 }

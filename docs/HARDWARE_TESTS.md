@@ -8,12 +8,14 @@ Manual tests, run before each tagged release. Each test produces a USB stick fro
 |---|------------------------------|-------------|----------------------------|------------------------------------------------|--------|
 | 1 | Win 7 SP1 32-bit             | windows     | Dell E6410 (legacy BIOS)   | Installer reaches "Install now" screen         | ✅ verified 2026-05-19 (bootrec backend) |
 | 1b | Win 7 SP1 32-bit            | windows + `--boot-record=ms-sys` | Dell E6410 (legacy BIOS) | Installer reaches "Install now" screen | ✅ verified 2026-05-19 (ms-sys backend) |
+| 1c | Windows Vista (any SP)      | auto (resolves to `windows`) | Dell E6410 (legacy BIOS)   | Installer reaches "Install now" screen | ✅ verified 2026-05-26 — same BOOTMGR chain as Win 7. Classifier picks `BootMode::Windows` from `\bootmgr` + `\sources\install.wim`. |
 | 2 | Win 10 22H2                  | windows     | Same machine, BIOS mode    | Installer reaches "Install now" screen         | TODO   |
 | 3 | Win 10 22H2                  | auto        | UEFI desktop               | Installer reaches "Install now" screen         | TODO   |
 | 4 | Ubuntu 22.04 (hybrid)        | auto        | Both BIOS and UEFI machine | GRUB boot menu appears, kernel loads           | TODO   |
 | 5 | FreeBSD 14                   | auto        | Legacy BIOS                | FreeBSD loader prompt appears                  | TODO   |
 | 6 | Hiren's BootCD PE            | windows     | Legacy BIOS                | Hiren's menu appears                           | TODO   |
 | 7 | Win XP SP3 VL                | windows-ntxp | Dell E6410 (legacy BIOS, SATA in ATA mode) | Text-mode + GUI-mode setup both reach completion | ✅ verified 2026-05-21 — production `bootsmith --type=windows-ntxp` reached first desktop boot. Text-mode used GRUB4DOS entry 1, GUI-mode continuation used entry 2, and post-test USB sanity check confirmed only the staged GRUB4DOS/FiraDisk payload remained. Post-burn MBR readback verified the GRUB4DOS MBR entry. **Caveat unchanged**: target SATA controller must be in BIOS ATA mode — XP SP3 ships without AHCI drivers; the install can't see an AHCI disk. |
+| 7b | Win XP SP3 VL + Dell `R274723` (Intel iaStor 9.6.4.1002) | `windows-ntxp --ahci-driver-dir=<R274723>` | Dell E6410 (legacy BIOS, SATA in AHCI mode) | XP text-mode setup sees the AHCI disk and installs through to first desktop | ✅ verified 2026-05-26 — slipstream landed iaStor as inbox; PnP auto-bound during text-mode (no F6 dance). Single "Files Needed" click in GUI-mode to navigate to `\i386\iaStor.sys` (see BACKLOG "GUI-mode auto-find" item, accepted UX for 1.0). |
 
 ## Bisection guide for "doesn't boot"
 
