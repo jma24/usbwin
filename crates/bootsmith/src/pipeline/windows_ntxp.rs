@@ -88,11 +88,24 @@ pub fn run(plan: &WritePlan, info: &DeviceInfo, config: &Config) -> Result<()> {
     validate_assets()?;
     validate_capacity(plan, info)?;
 
+    // The partition/format/mount phase below is several seconds of blocking
+    // diskutil + newfs_msdos shell-outs with no payload progress to report
+    // (the ISO copy bar only starts in stage_files). At default verbosity
+    // the tracing::debug! step lines are silent, so without this spinner the
+    // user stares at ~20s of dead air after confirming. The spinner is
+    // cleared before stage_files so the ISO copy bar owns the screen.
+    let prep = ProgressBar::new_spinner();
+    prep.set_style(ProgressStyle::with_template("  {spinner:.cyan} {msg}")?);
+    prep.enable_steady_tick(Duration::from_millis(100));
+
+    prep.set_message("preparing USB: unmounting target disk");
     tracing::debug!("step 1/7: unmount disk before GRUB4DOS MBR write");
     diskutil::unmount_disk(&bsd_path).context("unmount before GRUB4DOS MBR write")?;
+    prep.set_message("preparing USB: writing GRUB4DOS boot record");
     tracing::debug!("step 2/7: write GRUB4DOS MBR + boot track");
     write_grub4dos_mbr_track(info, config.verify).context("writing GRUB4DOS MBR/boot track")?;
 
+    prep.set_message("preparing USB: re-reading partition table");
     tracing::debug!("step 3/7: re-read partition table via unmount/mount cycle");
     if let Err(e) = diskutil::unmount_disk(&bsd_path) {
         tracing::debug!(error = %e, "first unmount errored (expected if nothing was mounted)");
@@ -101,15 +114,18 @@ pub fn run(plan: &WritePlan, info: &DeviceInfo, config: &Config) -> Result<()> {
     diskutil::unmount_disk_force(&bsd_path)
         .context("force-unmount before format (disk arbitration race)")?;
 
+    prep.set_message("preparing USB: formatting FAT32 partition");
     tracing::debug!(partition = %partition_raw, label = %plan.label, "step 4/7: newfs_msdos FAT32");
     diskutil::newfs_msdos_fat32(&partition_raw, &plan.label)
         .with_context(|| format!("formatting {partition_raw} as FAT32"))?;
 
+    prep.set_message("preparing USB: mounting formatted volume");
     tracing::debug!("step 5/7: mount formatted partition");
     diskutil::mount_disk(&bsd_path).context("mount after format")?;
     let usb_mount = find_mount_for_label(&plan.label)
         .ok_or_else(|| anyhow!("formatted partition didn't appear in /Volumes"))?;
     tracing::debug!(mount = %usb_mount.display(), "USB mount resolved");
+    prep.finish_and_clear();
 
     tracing::debug!("step 6/7: stage GRLDR / menu.lst / XP.ISO / FIRADISK.IMA");
     stage_files(plan, &usb_mount, config).context("staging GRUB4DOS/FiraDisk XP payload")?;
