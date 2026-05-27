@@ -81,7 +81,7 @@ checksum = "c4512299f36f043ab09a583e57bceb5a5aab7a73db1805848e8fef3c9e8c78b3"
 
 [[package]]
 name = "bootsmith"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "bootsmith-core",
@@ -96,7 +96,7 @@ dependencies = [
 
 [[package]]
 name = "bootsmith-core"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "thiserror",
  "tracing",
@@ -104,7 +104,7 @@ dependencies = [
 
 [[package]]
 name = "bootsmith-disk"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "bootsmith-core",
  "nix",
@@ -116,7 +116,7 @@ dependencies = [
 
 [[package]]
 name = "bootsmith-iso"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "bootsmith-core",
  "thiserror",
