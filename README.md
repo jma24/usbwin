@@ -8,12 +8,12 @@ Boot Camp Assistant.
 
 ## Status
 
-**Beta.** Windows XP and Windows 7 are hardware-verified end-to-end (XP
-unattended installs and XP-era AHCI textmode storage included), but so far on
-a single test machine (Dell E6410). Treat reliability on other hardware as
-unproven until the test matrix widens. The 1.0 scope is Windows XP and
-Windows 7; Windows 2000 is deferred to 1.1 (text-mode install works, but
-first boot needs a `boot.ini` repair — see
+**1.0 — released.** Windows XP and Windows 7 are hardware-verified end-to-end
+(XP unattended installs and XP-era AHCI textmode storage included). Caveat:
+verification so far is on a single test machine (Dell E6410) — treat
+reliability on other hardware as unproven until the test matrix widens. The
+1.0 scope is Windows XP and Windows 7; Windows 2000 is deferred to 1.1
+(text-mode install works, but first boot needs a `boot.ini` repair — see
 [`docs/BACKLOG.md`](docs/BACKLOG.md)). Remaining 1.0 work is release
 packaging.
 
@@ -42,12 +42,18 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the design, [`docs/XP_FIR
   Windows installer media is the awkward gap.
 
 There is currently no native macOS arm64 binary that writes a bootable
-Windows 2000/XP/7 install USB. This is that binary.
+Windows XP/7 install USB. This is that binary.
 
 ## Install
 
 ```sh
-# Build from source (requires Rust stable)
+# Homebrew
+brew install jma24/bootsmith/bootsmith
+
+# Or from crates.io (requires Rust stable)
+cargo install bootsmith
+
+# Or build from source
 git clone https://github.com/jma24/bootsmith
 cd bootsmith
 cargo build --release
