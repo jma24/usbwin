@@ -453,16 +453,15 @@ Done means:
 
 ### FAT32 cluster-size assumption
 
-`pipeline::diskutil::newfs_msdos_fat32` forces 4 KiB clusters with `-c 8`.
-This was added during XP debugging because of a suspected setupldr
-compatibility issue with 32 KiB clusters on large FAT32 partitions. The
-actual failure mode was never isolated.
+Status: done 2026-05-26. The forced `-c 8` (4 KiB clusters) is removed;
+`newfs_msdos_fat32` uses default cluster sizing.
 
-Done means:
-- Test the XP path with the default `newfs_msdos` cluster sizing on a large
-  USB stick.
-- If it fails, document the precise failure mode.
-- If it works, remove the forced `-c 8`.
+The `-c 8` was pre-FiraDisk debt. Its rationale (XP setupldr's FAT walker
+choking on 32 KiB clusters reading `txtsetup.sif`) no longer applies: in
+the FiraDisk path setupldr + txtsetup.sif are read from the RAM-mapped
+XP.ISO, not the FAT32 partition. Only GRUB4DOS reads this filesystem and
+its FAT driver handles 32 KiB clusters fine. Hardware-verified on the
+E6410: XP text-mode setup copied files cleanly with default clustering.
 
 ### Historical remediation docs
 

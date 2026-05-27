@@ -39,15 +39,16 @@ pub fn eject(bsd_path: &str) -> Result<()> {
 /// disk (`disk6`). The MBR must already have been written so the partition
 /// exists.
 pub fn newfs_msdos_fat32(partition_path: &str, label: &str) -> Result<()> {
-    // -c 8 → 8 sectors per cluster = 4 KiB clusters. newfs_msdos defaults
-    // to 32 KiB clusters (-c 64) on partitions > 32 GiB, which XP
-    // setupldr's simple FAT walker can't handle reliably — it returns
-    // "txtsetup.sif corrupt or missing, status 18" even when the file
-    // is present and intact. 4 KiB clusters work across all XP/Win 7
-    // setupldr / bootmgr variants we care about. The cost (more FAT
-    // entries, slightly slower large-file writes) is negligible for our
-    // ≤4 GB ISO payloads.
-    let args = ["-F", "32", "-c", "8", "-v", label, partition_path];
+    // Default newfs_msdos cluster sizing (32 KiB on >32 GiB partitions).
+    // An older `-c 8` (4 KiB) forcing lived here, justified by XP setupldr's
+    // FAT walker choking on big clusters reading `txtsetup.sif`. That was
+    // pre-FiraDisk debt: in the current path setupldr + txtsetup.sif are
+    // read from the RAM-mapped XP.ISO (ISO9660), not this FAT32 partition —
+    // only GRUB4DOS reads this FS, and its FAT driver handles 32 KiB fine.
+    // Removed after a hardware XP text-mode install copied files cleanly
+    // with default clustering (E6410, 2026-05-26). 32 KiB clusters also
+    // suit our payload (a few large files: XP.ISO, FIRADISK.IMA, grldr).
+    let args = ["-F", "32", "-v", label, partition_path];
     tracing::debug!(cmd = "newfs_msdos", ?args, "spawn");
     let output = Command::new("newfs_msdos")
         .args(args)
