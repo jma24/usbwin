@@ -3,22 +3,24 @@
 **This is the tool Rufus refuses to be.**
 
 A native macOS arm64 CLI for writing Windows install USB sticks — Windows
-2000, XP, and Windows 7 — without Rosetta, without a Windows VM, without
+XP and Windows 7 — without Rosetta, without a Windows VM, without
 Boot Camp Assistant.
 
 ## Status
 
-**Alpha.** The Windows 7 and XP paths are hardware-verified. The 1.0 scope
-is Windows 2000/XP/7 with unattended install support and XP/2000-era AHCI
-textmode storage drivers.
+**Alpha.** The Windows 7 and XP paths are hardware-verified end-to-end,
+including XP unattended installs and XP-era AHCI textmode storage. The 1.0
+scope is Windows XP and Windows 7; Windows 2000 is deferred to 1.1 (text-mode
+install works, but first boot needs a `boot.ini` repair — see
+[`docs/BACKLOG.md`](docs/BACKLOG.md)).
 
 | Mode | State |
 |------|-------|
 | Hybrid (Linux/BSD ISO raw write) | ✅ working since v0.1; maintained as a utility path, not part of the v1 Windows scope. |
-| Windows 7+ (BOOTMGR chain) | ✅ hardware-verified on Dell E6410 (2026-05-19) with both `--boot-record=bootrec` (default) and `--boot-record=ms-sys`. Same code path covers Vista and Win 8/10/11 — auto-classifier routes any ISO with `\bootmgr` + `\sources\install.wim` here. Vista hardware-verified on E6410 (2026-05-26). |
+| Windows 7+ (BOOTMGR chain) | ✅ hardware-verified on Dell E6410 with both `--boot-record=bootrec` (default) and `--boot-record=ms-sys`; SP1 regression re-run green 2026-05-26. Same code path covers Vista and Win 8/10/11 — auto-classifier routes any ISO with `\bootmgr` + `\sources\install.wim` here. Vista hardware-verified on E6410 (2026-05-26). |
 | Windows NT/XP (`windows-ntxp`) | ✅ GRUB4DOS + FiraDisk production path hardware-verified end-to-end on Dell E6410 (2026-05-21). |
-| Windows 2000 | 1.0 target; auto-detection exists, install support still pending. |
-| XP/2000 unattended installs | 1.0 target. |
+| Windows 2000 | ⏳ deferred to 1.1. Text-mode install hardware-verified on Dell E6410 (2026-05-22) via GRUB4DOS + SVBus; first boot needs a manual `boot.ini` `rdisk(1)→rdisk(0)` repair. See [`docs/WIN2K_SVBUS.md`](docs/WIN2K_SVBUS.md). |
+| XP unattended installs | ✅ hardware-verified on Dell E6410 — `--unattended` injects `WINNT.SIF` (product key, computer name, timezone, admin password, EULA). Win2k unattended tracks the 1.1 Win2k work. |
 | XP AHCI textmode storage | ✅ hardware-verified on Dell E6410 (2026-05-26) with BIOS SATA mode set to AHCI and the Dell `R274723` (Intel iaStor 9.6.4.1002) driver pack. `--ahci-driver-dir <path>` slipstreams a BYO vendor F6 driver pack into the staged XP.ISO's I386 directory and patches `TXTSETUP.SIF`/`DOSNET.INF` so XP treats the driver as inbox. See [`docs/AHCI_DRIVER.md`](docs/AHCI_DRIVER.md). |
 | Linux/isolinux | deferred; not a v1 goal. |
 | UEFI-only | deferred; not a v1 goal. |
@@ -104,8 +106,8 @@ bootsmith --dry-run Win7_SP1.iso /dev/disk8     # no sudo needed; emits bytes to
 For NT5-class Windows 2000/XP/2003 media, `--type=auto` resolves to the
 newer `windows-ntxp` GRUB4DOS + FiraDisk path. `--type=windows-xp` remains
 accepted as a compatibility alias for `windows-ntxp`. Windows 2000 media is
-recognized as NT5-class by auto-detect, but Win2k install support is still
-1.0 work.
+recognized as NT5-class by auto-detect and has an experimental
+`--type=windows-2000` path, but full Win2k install support is deferred to 1.1.
 
 ## Safety
 
