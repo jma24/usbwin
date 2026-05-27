@@ -313,16 +313,27 @@ XP-path cleanup.
 
 ### Release packaging
 
-Status: 1.0 blocker.
+Status: 1.0 blocker (reduced scope 2026-05-26 — see signing note below).
 
 Done means:
-- Build signed/notarized macOS release binaries.
 - Remove the local sibling `../mkmsbr` requirement from release builds by
   using a published crate, vendored dependency, or pinned git dependency.
   Implemented with the published `mkmsbr` crate; needs fresh-machine
-  install verification.
+  install verification (the last real release task).
 - Update README install instructions for users who are not building from a
   local multi-repo checkout.
+- Ship via the same channels as mkmsbr: crates.io (`cargo install`) and the
+  existing Homebrew tap.
+
+Signing/notarization: **optional, not a 1.0 blocker** (decided 2026-05-26,
+mirroring mkmsbr, which shipped 1.0.1 unsigned). Gatekeeper only blocks
+files carrying `com.apple.quarantine`, which is set on *browser/email
+downloads* — not on locally compiled binaries. `cargo install` compiles
+locally (no quarantine); Homebrew builds from source or strips the
+quarantine xattr from bottles. So the crates.io + Homebrew channels need no
+notarization. Notarization is only required for a frictionless prebuilt
+binary downloaded from a GitHub Release page. The user may still notarize
+for that download path, but it does not gate 1.0.
 
 ### Pipeline error reporting and verbose mode
 
