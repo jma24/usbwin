@@ -8,11 +8,14 @@ Boot Camp Assistant.
 
 ## Status
 
-**Alpha.** The Windows 7 and XP paths are hardware-verified end-to-end,
-including XP unattended installs and XP-era AHCI textmode storage. The 1.0
-scope is Windows XP and Windows 7; Windows 2000 is deferred to 1.1 (text-mode
-install works, but first boot needs a `boot.ini` repair — see
-[`docs/BACKLOG.md`](docs/BACKLOG.md)).
+**Beta.** Windows XP and Windows 7 are hardware-verified end-to-end (XP
+unattended installs and XP-era AHCI textmode storage included), but so far on
+a single test machine (Dell E6410). Treat reliability on other hardware as
+unproven until the test matrix widens. The 1.0 scope is Windows XP and
+Windows 7; Windows 2000 is deferred to 1.1 (text-mode install works, but
+first boot needs a `boot.ini` repair — see
+[`docs/BACKLOG.md`](docs/BACKLOG.md)). Remaining 1.0 work is release
+packaging.
 
 | Mode | State |
 |------|-------|
