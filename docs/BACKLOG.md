@@ -8,7 +8,7 @@ Last updated: 2026-05-21.
 
 ## v1.0 scope
 
-usbwin 1.0 is a focused Windows installer USB tool, not a generic boot
+bootsmith 1.0 is a focused Windows installer USB tool, not a generic boot
 loader. The target matrix is Windows 2000, Windows XP, and Windows 7, with
 unattended install support and NT5-era AHCI/textmode storage support.
 Linux/isolinux, generic UEFI-only media, Windows 8+, and broad rescue-disk
@@ -32,7 +32,7 @@ on the Dell E6410 on 2026-05-21, and post-burn readback verified the
 GRUB4DOS MBR entry on the 64 GB SanDisk.
 
 Completed:
-- XP SP3 reached first desktop boot from the production `usbwin` USB.
+- XP SP3 reached first desktop boot from the production `bootsmith` USB.
 - Post-test USB sanity check confirmed the USB still contained only the
   staged GRUB4DOS/FiraDisk files and no `\WINDOWS` install tree.
 - `HARDWARE_TESTS.md` row 7 was updated from pending to green.
@@ -53,7 +53,7 @@ Status: done 2026-05-21.
 
 Status: done 2026-05-21.
 
-- `HARDWARE_TESTS.md` has the expected `usbwin` confirmation output for XP
+- `HARDWARE_TESTS.md` has the expected `bootsmith` confirmation output for XP
   SP3 media.
 - The GRUB4DOS boot choices (entry 1 text-mode, entry 2 GUI-mode
   continuation) and reboot flow are documented in the boot flow section.
@@ -71,8 +71,8 @@ The FiraDisk migration replaced the old NTLDR / boot.ini / I386-staging
 pipeline with GRUB4DOS + RAM-mapped ISO. The leftover NTLDR-era code and
 docs have been removed:
 
-- Empty `crates/usbwin/src/pipeline/xp_assets/` directory deleted. ✅
-- `crates/usbwin/src/pipeline/fat32.rs` deleted (was the FAT32 walker for
+- Empty `crates/bootsmith/src/pipeline/xp_assets/` directory deleted. ✅
+- `crates/bootsmith/src/pipeline/fat32.rs` deleted (was the FAT32 walker for
   the never-shipped `build_xp_setup_chain_bootsect` LDR$ loader). ✅
 - `boot_records.rs::build_mbr_xp` and `tests/golden/mbr_xp_64gb.bin`
   deleted. XP mode writes the GRUB4DOS `grldr.mbr` boot track; no MBR_XP
@@ -98,7 +98,7 @@ Full root-cause story and working install procedure live in
   markers (present -> XP/2003 path, absent -> Win2k path).
 - SVBus V1.3 vendored from SourceForge with `svbusx86.sys` PE
   subsystem version patched 5.02 -> 5.00 for NT 5.0 compatibility.
-  See `crates/usbwin/src/pipeline/win2k_assets/PROVENANCE.md`.
+  See `crates/bootsmith/src/pipeline/win2k_assets/PROVENANCE.md`.
 - GRUB4DOS 0.4.5c (2015-05-18) vendored for the Win2k path
   specifically (XP keeps 0.4.6a).
 - menu.lst entry 1: no `hd0/hd1` swap, El Torito chainload
@@ -197,7 +197,7 @@ Research findings (need hardware validation):
   hosts a working build under the Latitude E6410 support pages
   (driver ID `rr1rk`, IMSM 9.6.4.1002 A00). Intel pulled their own
   listings years ago.
-- USB controller drivers are NOT required for the usbwin RAM-mapped
+- USB controller drivers are NOT required for the bootsmith RAM-mapped
   chain (FiraDisk/SVBus take over INT 13h from RAM after `map --mem`).
 - USB 3.0 forward-compat is a docs problem, not a code problem — users
   on newer machines need to plug into a USB 2.0 port and/or enable
@@ -272,7 +272,7 @@ to surface the full error chain cleanly.
 Done means:
 - Audit `windows_ntxp.rs`, `windows.rs`, and `diskutil.rs` for contexts that
   hide the underlying `io::Error` or command stderr.
-- Add a `-v` or `RUST_LOG=usbwin=debug` workflow that shows every file
+- Add a `-v` or `RUST_LOG=bootsmith=debug` workflow that shows every file
   operation during a burn.
 
 ## Compatibility backlog
@@ -295,7 +295,7 @@ Done means:
 Status: post-1.0.
 
 The codebase still has explicit mode names for isolinux and UEFI-only
-media, but v1 is Windows-focused. Do not spend 1.0 time turning usbwin into
+media, but v1 is Windows-focused. Do not spend 1.0 time turning bootsmith into
 a generic boot loader.
 
 Done means:

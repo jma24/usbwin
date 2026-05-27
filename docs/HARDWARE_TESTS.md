@@ -13,7 +13,7 @@ Manual tests, run before each tagged release. Each test produces a USB stick fro
 | 4 | Ubuntu 22.04 (hybrid)        | auto        | Both BIOS and UEFI machine | GRUB boot menu appears, kernel loads           | TODO   |
 | 5 | FreeBSD 14                   | auto        | Legacy BIOS                | FreeBSD loader prompt appears                  | TODO   |
 | 6 | Hiren's BootCD PE            | windows     | Legacy BIOS                | Hiren's menu appears                           | TODO   |
-| 7 | Win XP SP3 VL                | windows-ntxp | Dell E6410 (legacy BIOS, SATA in ATA mode) | Text-mode + GUI-mode setup both reach completion | ✅ verified 2026-05-21 — production `usbwin --type=windows-ntxp` reached first desktop boot. Text-mode used GRUB4DOS entry 1, GUI-mode continuation used entry 2, and post-test USB sanity check confirmed only the staged GRUB4DOS/FiraDisk payload remained. Post-burn MBR readback verified the GRUB4DOS MBR entry. **Caveat unchanged**: target SATA controller must be in BIOS ATA mode — XP SP3 ships without AHCI drivers; the install can't see an AHCI disk. |
+| 7 | Win XP SP3 VL                | windows-ntxp | Dell E6410 (legacy BIOS, SATA in ATA mode) | Text-mode + GUI-mode setup both reach completion | ✅ verified 2026-05-21 — production `bootsmith --type=windows-ntxp` reached first desktop boot. Text-mode used GRUB4DOS entry 1, GUI-mode continuation used entry 2, and post-test USB sanity check confirmed only the staged GRUB4DOS/FiraDisk payload remained. Post-burn MBR readback verified the GRUB4DOS MBR entry. **Caveat unchanged**: target SATA controller must be in BIOS ATA mode — XP SP3 ships without AHCI drivers; the install can't see an AHCI disk. |
 
 ## Bisection guide for "doesn't boot"
 
@@ -23,14 +23,14 @@ When a test fails, run through this checklist before opening an issue:
 2. **Does the BIOS try to boot but immediately error?** Likely the active flag is missing or the MBR boot code is wrong. Compare MBR bytes against `boot-asm/build/mbr.bin`.
 3. **Does the MBR run but say "missing operating system" / "no boot record"?** The PBR is bad. Compare the first sector of the partition (`dd if=/dev/rdisk8s1 bs=512 count=1`) against `boot-asm/build/fat32_pbr.bin` — but remember bytes 3..89 should be the partition's actual BPB, NOT our blob's BPB.
 4. **PBR runs but "BOOTMGR is missing"?** The boot code is loading correctly but can't find `bootmgr` in the filesystem. Mount the USB on the Mac and verify `bootmgr` is at the root.
-5. **PBR runs, `bootmgr` loads, blue Windows logo, then BSOD/restart?** Not usbwin's fault — that's a Windows install issue (RAM, disk drivers, ISO corruption).
+5. **PBR runs, `bootmgr` loads, blue Windows logo, then BSOD/restart?** Not bootsmith's fault — that's a Windows install issue (RAM, disk drivers, ISO corruption).
 
 For `windows-ntxp`, the active boot record is the chenall GRUB4DOS
 `grldr.mbr` boot track. Verify the MBR partition entry after burn:
 
 ```sh
-sudo dd if=/dev/rdiskN of=/private/tmp/usbwin-grldr-track.bin bs=512 count=16
-xxd -g1 -s 446 -l 66 /private/tmp/usbwin-grldr-track.bin
+sudo dd if=/dev/rdiskN of=/private/tmp/bootsmith-grldr-track.bin bs=512 count=16
+xxd -g1 -s 446 -l 66 /private/tmp/bootsmith-grldr-track.bin
 ```
 
 On the 64 GB SanDisk E6410 test stick, the first entry should be:
@@ -47,16 +47,16 @@ length 125043376 sectors.
 Reference burn:
 
 ```sh
-sudo usbwin winxp_sp3.iso /dev/rdiskN --type=windows-ntxp
+sudo bootsmith winxp_sp3.iso /dev/rdiskN --type=windows-ntxp
 ```
 
 Expected confirmation output:
 
 ```text
-usbwin: formatting FAT32 volume USBWINXP
-usbwin: writing GRUB4DOS MBR boot track
-usbwin: staged GRLDR, menu.lst, XP.ISO, FIRADISK.IMA
-usbwin: winxp_sp3.iso -> /dev/rdiskN (Windows NT/XP FiraDisk mode) OK
+bootsmith: formatting FAT32 volume BOOTSMITHXP
+bootsmith: writing GRUB4DOS MBR boot track
+bootsmith: staged GRLDR, menu.lst, XP.ISO, FIRADISK.IMA
+bootsmith: winxp_sp3.iso -> /dev/rdiskN (Windows NT/XP FiraDisk mode) OK
 ```
 
 Boot flow on the Dell E6410:
@@ -71,17 +71,17 @@ Boot flow on the Dell E6410:
 Post-test USB sanity check:
 
 ```sh
-find /Volumes/USBWINXP -maxdepth 1 -print | sort
+find /Volumes/BOOTSMITHXP -maxdepth 1 -print | sort
 ```
 
 Expected root payload:
 
 ```text
-/Volumes/USBWINXP
-/Volumes/USBWINXP/FIRADISK.IMA
-/Volumes/USBWINXP/GRLDR
-/Volumes/USBWINXP/XP.ISO
-/Volumes/USBWINXP/menu.lst
+/Volumes/BOOTSMITHXP
+/Volumes/BOOTSMITHXP/FIRADISK.IMA
+/Volumes/BOOTSMITHXP/GRLDR
+/Volumes/BOOTSMITHXP/XP.ISO
+/Volumes/BOOTSMITHXP/menu.lst
 ```
 
 There should be no `WINDOWS`, `I386`, `$WIN_NT$.~BT`, `$WIN_NT$.~LS`,

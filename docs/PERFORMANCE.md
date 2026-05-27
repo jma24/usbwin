@@ -2,7 +2,7 @@
 
 ## Design principle: verifiability first, speed second
 
-Speed is a non-goal until correctness is locked in. Every optimization must preserve byte-equivalent output and pass the same verify-by-default re-read check. If a change makes usbwin 5× faster but skips verification or breaks the QEMU boot test, it does not ship.
+Speed is a non-goal until correctness is locked in. Every optimization must preserve byte-equivalent output and pass the same verify-by-default re-read check. If a change makes bootsmith 5× faster but skips verification or breaks the QEMU boot test, it does not ship.
 
 The order of work for any new feature is:
 
@@ -11,7 +11,7 @@ The order of work for any new feature is:
 
 Not the other way around. Once a path is verifiably correct it becomes a regression test, and speed work proceeds against it without fear of silent breakage.
 
-## The reality usbwin replaces
+## The reality bootsmith replaces
 
 UNetbootin copies a 700 MB Windows XP ISO to USB in **~20 minutes** on a 2026 Mac. That's roughly 580 KB/s — about 1% of what the hardware can sustain. The slowness comes from small buffers (4 KB), Java I/O overhead, per-file `fsync`, the cached `/dev/disk` device instead of raw `/dev/rdisk`, *and* the entire program running translated x86 through Rosetta on top of that. None of these are hardware constraints — they're all software the native arm64 Rust binary simply doesn't pay.
 
@@ -49,10 +49,10 @@ These are *targets*, not measured numbers. Verified during hardware testing; reg
 
 Empirically verified (see `FIELD_FINDINGS_2026_05_18.md` §2): on macOS the raw character device `/dev/rdiskN` **silently drops writes** smaller than its sector size (typically 512 bytes). The `write()` call returns the requested byte count but the bytes never reach the disk. `/dev/diskN` (the buffered/cached variant) handles sub-sector writes correctly because the kernel buffers them.
 
-usbwin's two write paths must respect this:
+bootsmith's two write paths must respect this:
 
 - **Full-sector and multi-sector writes** (ISO data, MBR sector 0, PBR sector splice, the whole pipeline data plane): use `/dev/rdiskN`. We get 3–5× the throughput and no silent failures because every write we make is sector-aligned.
-- **Sub-sector writes** (e.g. patching a single byte in a partition table without rewriting the whole sector): never issued by usbwin. Where we conceptually want to change a few bytes, we read the affected sector, modify in memory, write the whole sector back. This is what `splice_fat32_pbr` does.
+- **Sub-sector writes** (e.g. patching a single byte in a partition table without rewriting the whole sector): never issued by bootsmith. Where we conceptually want to change a few bytes, we read the affected sector, modify in memory, write the whole sector back. This is what `splice_fat32_pbr` does.
 
 If a future code path ever needs sub-sector writes, it must implement read-modify-write of the whole sector — *or* fall back to `/dev/diskN` for that specific write and accept the throughput cost.
 

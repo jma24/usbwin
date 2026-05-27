@@ -43,7 +43,7 @@ masking the next. In rough chronological order of discovery on
    drivers whose declared subsystem version exceeds the OS version. We
    patch the byte at PE-optional-header `+50` from `0x02` to `0x00`
    and recompute the PE checksum at vendor time. See
-   `crates/usbwin/src/pipeline/win2k_assets/PROVENANCE.md`.
+   `crates/bootsmith/src/pipeline/win2k_assets/PROVENANCE.md`.
 4. **GRUB4DOS 0.4.6a (the version the XP path uses) doesn't matter
    here in practice** — early research worker flagged
    chenall/grub4dos#154 as a low-memory regression that breaks
@@ -51,7 +51,7 @@ masking the next. In rough chronological order of discovery on
    identical with both 0.4.6a and 0.4.5c. The version swap was
    ultimately harmless but isn't load-bearing. We ship 0.4.5c for
    the Win2k path anyway because that's the version SVBus's own
-   ReadMe specifies — keeps usbwin's deviation from upstream minimal.
+   ReadMe specifies — keeps bootsmith's deviation from upstream minimal.
 5. **The `map (hd0) (hd1) / map (hd1) (hd0)` swap breaks SVBus during
    text-mode setup.** With the swap in place, SVBus's GRUB4DOS-slot
    enumeration ends up with zero usable drives and text-mode setup
@@ -94,7 +94,7 @@ masking the next. In rough chronological order of discovery on
 
 ## Working install procedure (hardware-tested 2026-05-22)
 
-1. `usbwin <win2k.iso> /dev/rdiskN --type=windows-2000`
+1. `bootsmith <win2k.iso> /dev/rdiskN --type=windows-2000`
 2. Boot USB on target. GRUB4DOS menu → entry 1.
 3. "Press any key to boot from CD" → press a key. **Leave USB in.**
 4. At first text-mode screen ("Setup is inspecting your computer's
@@ -162,7 +162,7 @@ Three entries:
 3. **Win2k text-mode setup via direct SETUPLDR.BIN (fallback)** —
    diagnostic alternative to entry 1 if El Torito misbehaves.
 
-See `crates/usbwin/src/pipeline/windows_2000.rs` for the source-of-
+See `crates/bootsmith/src/pipeline/windows_2000.rs` for the source-of-
 truth strings and inline comments documenting the rationale.
 
 ## Phase 3: auto-repair boot.ini

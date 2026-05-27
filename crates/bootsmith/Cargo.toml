@@ -1,0 +1,29 @@
+[package]
+name = "bootsmith"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Native arm64 macOS bootable-USB writer."
+
+[[bin]]
+name = "bootsmith"
+path = "src/main.rs"
+
+[[bin]]
+name = "bootsmith-eval"
+path = "src/bin/eval.rs"
+
+[dependencies]
+bootsmith-core.workspace = true
+bootsmith-iso.workspace = true
+bootsmith-disk.workspace = true
+bootrec.workspace = true
+
+anyhow.workspace = true
+clap.workspace = true
+indicatif.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

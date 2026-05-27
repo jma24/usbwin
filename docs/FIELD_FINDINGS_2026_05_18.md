@@ -3,7 +3,7 @@
 Empirical lessons from spending ~3h getting a Win 7 install USB to boot on a
 Dell E6410 by manually combining UNetbootin + ms-sys on macOS arm64 (no
 Rosetta path).  Captures the specific bugs and macOS gotchas that consumed
-real time, so usbwin doesn't rediscover them.
+real time, so bootsmith doesn't rediscover them.
 
 ---
 
@@ -38,7 +38,7 @@ The bug that cost the most time:
   pre-reads aligned sectors and modifies in memory. macOS isn't either, so
   that path is skipped.
 
-**Implications for usbwin**:
+**Implications for bootsmith**:
 - For sub-sector writes, target `/dev/diskN`, not `/dev/rdiskN`.
 - For full-sector writes (MBR sector 0 of disk, etc.) `/dev/rdiskN` is 3-5x
   faster — keep using it.
@@ -68,7 +68,7 @@ the boot code can legitimately use any of them.
 
 ---
 
-## 4. UNetbootin's specific Win 7 bug (the bug usbwin exists to fix)
+## 4. UNetbootin's specific Win 7 bug (the bug bootsmith exists to fix)
 
 UNetbootin's Win 7 USB-creation does:
 
@@ -87,7 +87,7 @@ Result on legacy BIOS:
 - PBR is the macOS default — prints "Non-system disk" and halts.
 
 So UNetbootin gets ~80% of the way, then leaves the final boot sector in a
-macOS-default state. **usbwin must write a Win-compatible PBR with the
+macOS-default state. **bootsmith must write a Win-compatible PBR with the
 correct BPB preserved** to close this gap.
 
 ---
@@ -141,7 +141,7 @@ diskutil unmountDisk /dev/diskN
 sudo <next write operation> # runs while unmounted
 ```
 
-usbwin should either:
+bootsmith should either:
 - Use `DiskArbitration.framework` (`DASessionCreate` +
   `DARegisterDiskAppearedCallback` with a denial callback) to suppress
   auto-mount for the duration of the write, OR
@@ -163,7 +163,7 @@ macOS BSD `fdisk` (`/sbin/fdisk`):
 - The `-y` confirmation prompt is bypassable via `echo`-piping multi-line
   input, but error-prone.
 
-usbwin should write the partition table + active flag directly in code —
+bootsmith should write the partition table + active flag directly in code —
 it's just 16 bytes per partition entry at MBR offset 0x1BE. Specifically the
 first byte of the entry: `0x80` = active, `0x00` = inactive.
 

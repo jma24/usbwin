@@ -13,4 +13,4 @@ Current references:
 
 The historical canonical-recipe comparison, dual-boot footgun analysis,
 and WIPE.DAT design notes lived here. They are not part of the shipped
-pipeline; usbwin no longer writes `boot.ini` or any NTLDR chain.
+pipeline; bootsmith no longer writes `boot.ini` or any NTLDR chain.

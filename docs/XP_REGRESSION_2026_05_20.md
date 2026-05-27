@@ -278,14 +278,14 @@ effects may be masked by A and C.
 ## Code state at end-of-session
 
 ```
-modified:   crates/usbwin/Cargo.toml                                 (unrelated, eval bin)
-modified:   crates/usbwin/src/pipeline/windows_xp.rs                  (Fix 1, Fix 2)
-modified:   crates/usbwin/src/pipeline/windows_xp_unattended.rs       (Fix 1)
-modified:   crates/usbwin/src/pipeline/xp_staging.rs                  (Fix 2)
+modified:   crates/bootsmith/Cargo.toml                                 (unrelated, eval bin)
+modified:   crates/bootsmith/src/pipeline/windows_xp.rs                  (Fix 1, Fix 2)
+modified:   crates/bootsmith/src/pipeline/windows_xp_unattended.rs       (Fix 1)
+modified:   crates/bootsmith/src/pipeline/xp_staging.rs                  (Fix 2)
 modified:   docs/TECH_DEBT.md                                         (Fix 2 doc)
 new file:   docs/XP_REGRESSION_2026_05_20.md                          (this file)
 new file:   /Users/joa/code/mkmsbr/docs/XP_INT13_DRIVE_SWAP_SPEC.md   (Fix 3)
-new file:   crates/usbwin/src/bin/                                    (unrelated eval bin)
+new file:   crates/bootsmith/src/bin/                                    (unrelated eval bin)
 ```
 
 All in working-tree, not committed.

@@ -58,9 +58,9 @@ GRUB4DOS MBR/boot track -> active FAT32 partition -> /GRLDR -> /menu.lst
 
 Implementation expectation:
 
-- usbwin embeds the known-working chenall GRUB4DOS 0.4.6a `grldr.mbr`
+- bootsmith embeds the known-working chenall GRUB4DOS 0.4.6a `grldr.mbr`
   bytes and patches only the MBR partition table/signature fields.
-- The production usbwin path should not depend on an unversioned system
+- The production bootsmith path should not depend on an unversioned system
   GRUB4DOS install.
 - Verify by read-back just like the existing `bootrec` paths.
 
@@ -200,7 +200,7 @@ Prototype sequence:
 4. Confirm text-mode file copy completes.
 5. Confirm GUI-mode setup finds the source.
 
-Only after that works should usbwin add answer-file support.
+Only after that works should bootsmith add answer-file support.
 
 Production options, in preferred order:
 
@@ -256,7 +256,7 @@ Non-goals:
 
 ## QEMU prototype checklist
 
-Hand-stage a USB image before integrating with usbwin:
+Hand-stage a USB image before integrating with bootsmith:
 
 1. Create a FAT32 USB disk image with one active partition.
 2. Install GRUB4DOS boot code.
@@ -307,7 +307,7 @@ USB MBR/PBR and does not create `\WINDOWS` on the USB.
   noninteractively from the virtual floppy?
 - Does the drive-swap mapping remain visible to XP setup after FiraDisk
   claims the RAM ISO?
-- How much RAM should usbwin require or warn about? `--mem` needs enough
+- How much RAM should bootsmith require or warn about? `--mem` needs enough
   RAM for the whole ISO plus XP setup overhead; a 512 MiB machine may be
   tight with later SP3 media.
 - Should production support WinVBlock as a peer option or only as a debug
@@ -333,12 +333,12 @@ USB MBR/PBR and does not create `\WINDOWS` on the USB.
 
 ## Iteration 2 go/no-go
 
-Go to usbwin implementation only if QEMU proves:
+Go to bootsmith implementation only if QEMU proves:
 
 - XP setup boots from the mapped ISO.
 - FiraDisk or WinVBlock prevents `0x7B` at protected-mode handoff.
 - The normal partitioner appears.
 - GUI-mode setup finds its source without the legacy `I386` trees.
 
-If any of those fail, debug the prototype before touching the usbwin
+If any of those fail, debug the prototype before touching the bootsmith
 pipeline.

@@ -234,7 +234,7 @@ the first positive hardware signal: the driver-signing prompt disappeared.
 The ISO patch remains useful because it is native, append-only on the
 known XP SP3 VL media, and keeps the hardware-verified RAM ISO pipeline.
 
-**Path 1** is the architecturally "correct" long-term answer if usbwin
+**Path 1** is the architecturally "correct" long-term answer if bootsmith
 ever expands beyond unattended-XP into XP driver injection,
 multi-source USB, or ISO-less Win2k/2003. Not v1 scope.
 

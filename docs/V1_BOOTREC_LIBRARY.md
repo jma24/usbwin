@@ -2,16 +2,16 @@
 
 ## Status (2026-05-19)
 
-`bootrec` exists at [github.com/jma24/bootrec](https://github.com/jma24/bootrec) and is the **default** boot-record backend in usbwin (path dep, in-process). The Win 7 install-USB path (`bootrec::mbr_win7` + `bootrec::FAT32_PBR_BOOTMGR_MULTI_BOOT` spliced via `bootrec::splice_fat32_pbr_multi`) is hardware-verified on a Dell E6410 — boots end-to-end from `usbwin <iso> <device>` to the Win 7 "Install now" screen. The old XP NTLDR/PBR path was removed from usbwin on 2026-05-21; the active XP path is GRUB4DOS + FiraDisk (`windows-ntxp`) and does not use bootrec's NTLDR PBR.
+`bootrec` exists at [github.com/jma24/bootrec](https://github.com/jma24/bootrec) and is the **default** boot-record backend in bootsmith (path dep, in-process). The Win 7 install-USB path (`bootrec::mbr_win7` + `bootrec::FAT32_PBR_BOOTMGR_MULTI_BOOT` spliced via `bootrec::splice_fat32_pbr_multi`) is hardware-verified on a Dell E6410 — boots end-to-end from `bootsmith <iso> <device>` to the Win 7 "Install now" screen. The old XP NTLDR/PBR path was removed from bootsmith on 2026-05-21; the active XP path is GRUB4DOS + FiraDisk (`windows-ntxp`) and does not use bootrec's NTLDR PBR.
 
-The `ms-sys` shell-out is preserved as `--boot-record=ms-sys` for byte-equality auditing. It is no longer required to build or run usbwin.
+The `ms-sys` shell-out is preserved as `--boot-record=ms-sys` for byte-equality auditing. It is no longer required to build or run bootsmith.
 
 What's documented below is the original v1.0 design spec — kept as a record of the eval-first methodology, clean-room protocol, and component breakdown. The "Timeline" and "What kicks off v1.0 work" sections at the bottom are historical; v1.0 happened.
 
 ## One-paragraph summary
 
 A standalone MIT-licensed Rust library that produces Microsoft-compatible MBR
-and FAT32/NTFS boot record byte sequences, replacing usbwin's runtime
+and FAT32/NTFS boot record byte sequences, replacing bootsmith's runtime
 dependency on ms-sys. The library is developed **eval-first**: a verification
 harness using ms-sys as a comparison oracle and QEMU as a boot tester is
 written before any boot code. The library is "done" for a given variant when
@@ -23,7 +23,7 @@ sessions.
 The v0.2 / v0.3 path shells out to ms-sys for the MBR and PBR bytes. That
 works but has three real costs:
 
-1. **External GPL-2 dependency** — usbwin is MIT, ms-sys is GPL-2. The
+1. **External GPL-2 dependency** — bootsmith is MIT, ms-sys is GPL-2. The
    process-boundary separation keeps the licenses compatible, but a
    self-contained MIT binary would be cleaner for redistribution.
 2. **Installation friction** — users must `git clone gitlab.com/cmaiolino/ms-sys`
@@ -80,7 +80,7 @@ The synthetic test environments:
 - **MBR + active partition + dummy PBR that just prints to serial**:
   validates `mbr_7`, `mbr_xp`.
 
-Test infrastructure already half-built (`crates/usbwin-boot/tests/qemu_pbr.rs`
+Test infrastructure already half-built (`crates/bootsmith-boot/tests/qemu_pbr.rs`
 from v0.2 work). Generalize it into a per-variant harness.
 
 ### Layer 3 — Real-content boot test
@@ -129,7 +129,7 @@ Out of scope for v1.0:
 - exFAT boot records
 - Other-OS boot records (syslinux, GRUB stage 1)
 - UEFI boot variants
-- Partitioning utilities (that's usbwin's job)
+- Partitioning utilities (that's bootsmith's job)
 
 ## Component breakdown — order of implementation
 
@@ -147,12 +147,12 @@ against Layers 1-2 before moving to the next.
 Items 1-2 are quick wins; they get us off ms-sys for MBR work within a
 week. Item 3 (XP PBR) is the next-most-tractable. Item 4 is the hard one
 (multi-sector, multi-stage, the thing we hit a wall on previously); it
-gets the most eval scrutiny. Item 5 only matters if usbwin grows NTFS
+gets the most eval scrutiny. Item 5 only matters if bootsmith grows NTFS
 support, which is not currently planned.
 
 ## Project layout
 
-A new sibling Rust crate, either inside the usbwin workspace or
+A new sibling Rust crate, either inside the bootsmith workspace or
 standalone:
 
 ```
@@ -191,7 +191,7 @@ bootrec/
 │   │   └── ...               # See "Real-content fixtures" below
 │   └── fixtures/             # Small data files (BPBs, partition tables)
 └── docs/
-    └── PROVENANCE.md         # Clean-room protocol (inherited from usbwin)
+    └── PROVENANCE.md         # Clean-room protocol (inherited from bootsmith)
 ```
 
 ## Eval-first workflow (how to actually develop a variant)
@@ -255,7 +255,7 @@ the fixture changed.
 
 ## Clean-room protocol (air-gapped from ms-sys source)
 
-This is the strictest form of the protocol described in usbwin's
+This is the strictest form of the protocol described in bootsmith's
 `docs/PROVENANCE.md` — what intellectual-property law calls a "Chinese
 Wall" or "clean-room" reimplementation, the same shape Compaq used in
 1984 to reimplement the IBM PC BIOS without copyright infringement.
@@ -545,17 +545,17 @@ and a CLI binary. The same code, two consumption modes.
 
 ### Library (`bootrec` Rust crate)
 
-The canonical API. usbwin links against it directly, gets Rust-typed
+The canonical API. bootsmith links against it directly, gets Rust-typed
 input (`Fat32Bpb`, `DiskGeometry`, etc.) and Rust-typed output
 (`[u8; 512]`, `PbrBytes`). No subprocess overhead, no string parsing,
-no shell escaping. usbwin's `pipeline/windows.rs` switches from
+no shell escaping. bootsmith's `pipeline/windows.rs` switches from
 `Command::new(ms_sys).args(...)` to `bootrec::fat32_pbr_bootmgr(bpb)`.
 
 ```rust
-// In usbwin's Cargo.toml:
+// In bootsmith's Cargo.toml:
 bootrec = { path = "../bootrec" }   // or version = "1.0" when published
 
-// In usbwin's pipeline/windows.rs:
+// In bootsmith's pipeline/windows.rs:
 let pbr_bytes = bootrec::fat32_pbr_bootmgr(bpb);
 dev.write_at(0, &pbr_bytes[0])?;    // sector 0
 dev.write_at(512, &pbr_bytes[1])?;  // sector 1
@@ -569,10 +569,10 @@ drop-in replacement for ms-sys for the variants we support. ~50 lines
 of clap-based argument parsing around library calls.
 
 ```sh
-# usbwin's --mbr7 equivalent
+# bootsmith's --mbr7 equivalent
 bootrec --mbr-win7 /dev/rdisk6
 
-# usbwin's --fat32pe equivalent
+# bootsmith's --fat32pe equivalent
 bootrec --fat32-bootmgr /dev/rdisk6s1
 
 # Or by variant explicitly
@@ -626,7 +626,7 @@ clap = { version = "4", features = ["derive"] }   # binary only; cargo
 
 The library is the public interface that's stable across versions; the
 binary's CLI is allowed to evolve more freely (deprecations announced
-in release notes). usbwin always tracks the library version, not the
+in release notes). bootsmith always tracks the library version, not the
 binary version.
 
 ### Naming for symmetry with ms-sys
@@ -649,13 +649,13 @@ old names are accepted as aliases for muscle memory.
 
 ## Audience and packaging
 
-`bootrec` is its **own project**, not a usbwin subcomponent. Separate
+`bootrec` is its **own project**, not a bootsmith subcomponent. Separate
 repo, separate releases, separate brew formula, independent
 distribution.
 
 ### Why separate (audience analysis)
 
-usbwin's audience is small and narrow: macOS-on-Apple-Silicon users
+bootsmith's audience is small and narrow: macOS-on-Apple-Silicon users
 who want Windows install USBs without Rosetta/VMs. The community is
 likely dozens to low-hundreds of people total, growing slowly as more
 sysadmins, IT folk, and retro-tech enthusiasts hit the post-Rosetta
@@ -673,14 +673,14 @@ gap.
 | CI / automation                                | ~hundreds        | Linux CI runners producing Windows install media as artifacts. |
 | Educators / OS-dev curriculum                  | ~hundreds        | bootrec is one of few public reference implementations derived purely from specs; teaching material. |
 
-usbwin **uses** bootrec. usbwin is a downstream consumer like any
-other. The dependency direction is `usbwin → bootrec`, never the
+bootsmith **uses** bootrec. bootsmith is a downstream consumer like any
+other. The dependency direction is `bootsmith → bootrec`, never the
 reverse.
 
 ### What this implies operationally
 
 1. **Separate repository** when the work starts in earnest. `bootrec`
-   on GitHub as its own project; usbwin pins a Cargo dependency by
+   on GitHub as its own project; bootsmith pins a Cargo dependency by
    git URL during dev and by published version after `bootrec` hits
    crates.io.
 
@@ -688,28 +688,28 @@ reverse.
 
    ```sh
    brew install bootrec          # standalone — what the wider audience wants
-   brew install usbwin           # depends on bootrec; transitively installs it
+   brew install bootsmith           # depends on bootrec; transitively installs it
    ```
 
    Each formula maintained in its own tap. bootrec's would be a
-   better candidate for eventual homebrew-core inclusion than usbwin's,
+   better candidate for eventual homebrew-core inclusion than bootsmith's,
    precisely because the audience is wider and the tool is smaller and
    more general-purpose.
 
 3. **Separate clean-room audits.** bootrec's reading log, PR
    attestations, similarity-distribution data are all tracked in
-   bootrec's repo. usbwin's repo doesn't carry that burden — it links
+   bootrec's repo. bootsmith's repo doesn't carry that burden — it links
    against bootrec and inherits the audit conclusion as a third party
    would. The clean-room story is structurally cleaner this way.
 
 4. **Independent release cadence.** bootrec might hit 1.0 long before
-   usbwin's clean-room-bootrec story is integrated. usbwin meanwhile
+   bootsmith's clean-room-bootrec story is integrated. bootsmith meanwhile
    continues shipping with ms-sys shell-out (v0.2/v0.3 path) and
    migrates to bootrec when it makes sense — possibly as v2.0.
 
 5. **Different governance later.** If bootrec gains maintainers from
    the wider audience (Linux distros, USB-tool authors), it can have
-   its own governance model. usbwin stays a smaller-team project. The
+   its own governance model. bootsmith stays a smaller-team project. The
    API contract between them is a normal library API contract — same
    way Rust apps depend on `serde` without `serde` becoming part of
    each consuming project.
@@ -740,13 +740,13 @@ class Bootrec < Formula
 end
 ```
 
-`usbwin`'s formula (downstream):
+`bootsmith`'s formula (downstream):
 
 ```ruby
-class Usbwin < Formula
+class Bootsmith < Formula
   desc "Native arm64 macOS bootable-USB writer"
-  homepage "https://github.com/jma24/usbwin"
-  url "https://github.com/jma24/usbwin/archive/v2.0.0.tar.gz"
+  homepage "https://github.com/jma24/bootsmith"
+  url "https://github.com/jma24/bootsmith/archive/v2.0.0.tar.gz"
   sha256 "..."
   license "MIT"
 
@@ -762,24 +762,24 @@ end
 
 Two brew commands, two install paths, clean dependency graph.
 
-### Migration plan for usbwin
+### Migration plan for bootsmith
 
-This is what happens to usbwin when bootrec is ready:
+This is what happens to bootsmith when bootrec is ready:
 
-- **Today (v0.2 / v0.3):** usbwin shells out to ms-sys. Working.
-- **v1.0 (usbwin):** Same. ms-sys-based, real-hardware-verified.
-- **v2.0 (usbwin) — coincides with bootrec 1.0:** usbwin replaces
+- **Today (v0.2 / v0.3):** bootsmith shells out to ms-sys. Working.
+- **v1.0 (bootsmith):** Same. ms-sys-based, real-hardware-verified.
+- **v2.0 (bootsmith) — coincides with bootrec 1.0:** bootsmith replaces
   the ms-sys shell-out with `bootrec::*` library calls. The two
   shell-out helpers (`ms_sys_mbr7`, `ms_sys_fat32pe`, etc.) become
   thin wrappers around `bootrec::mbr_win7()` and `bootrec::fat32_pbr_bootmgr()`.
   ms-sys becomes optional (kept around as a fallback / oracle).
-- **v3.0 (usbwin):** ms-sys removed entirely. Single MIT binary.
+- **v3.0 (bootsmith):** ms-sys removed entirely. Single MIT binary.
 
 Each step is independently shippable; the migration is incremental.
 
 ## License
 
-`bootrec` is MIT-2.0. Independent of usbwin (could be used by other
+`bootrec` is MIT-2.0. Independent of bootsmith (could be used by other
 tools — e.g. a Linux LiveUSB creator, a forensic image preparation tool,
 a retro-computing utility). Single self-contained crate.
 

@@ -1,4 +1,4 @@
-# usbwin
+# bootsmith
 
 **This is the tool Rufus refuses to be.**
 
@@ -23,7 +23,7 @@ textmode storage drivers.
 | Linux/isolinux | deferred; not a v1 goal. |
 | UEFI-only | deferred; not a v1 goal. |
 
-The MBR + FAT32 PBR bytes come from the published [`mkmsbr`](https://github.com/jma24/mkmsbr) crate by default, linked in-process — no external `ms-sys` binary required. The legacy `ms-sys` shell-out is still available as `--boot-record=ms-sys` for byte-equality auditing of Win 7 mode. usbwin imports it as `bootrec::*` internally via a Cargo `package = "mkmsbr"` alias.
+The MBR + FAT32 PBR bytes come from the published [`mkmsbr`](https://github.com/jma24/mkmsbr) crate by default, linked in-process — no external `ms-sys` binary required. The legacy `ms-sys` shell-out is still available as `--boot-record=ms-sys` for byte-equality auditing of Win 7 mode. bootsmith imports it as `bootrec::*` internally via a Cargo `package = "mkmsbr"` alias.
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the design, [`docs/XP_FIRADISK_PIPELINE.md`](docs/XP_FIRADISK_PIPELINE.md) for the active XP recipe, and [`docs/BACKLOG.md`](docs/BACKLOG.md) for release blockers and follow-up work.
 
@@ -43,10 +43,10 @@ Windows 2000/XP/7 install USB. This is that binary.
 
 ```sh
 # Build from source (requires Rust stable)
-git clone https://github.com/jma24/usbwin
-cd usbwin
+git clone https://github.com/jma24/bootsmith
+cd bootsmith
 cargo build --release
-sudo cp target/release/usbwin /usr/local/bin/
+sudo cp target/release/bootsmith /usr/local/bin/
 ```
 
 The published `mkmsbr` crate is pulled by Cargo automatically, so a plain
@@ -55,7 +55,7 @@ repo is required.
 
 ### Optional: ms-sys fallback
 
-By default, usbwin uses the in-process `bootrec` library for MBR and FAT32
+By default, bootsmith uses the in-process `bootrec` library for MBR and FAT32
 PBR bytes. If you want byte-for-byte equivalence with the upstream tool
 (useful for auditing or comparison against a known-good Win 7 USB), pass
 `--boot-record=ms-sys` and install ms-sys once:
@@ -64,7 +64,7 @@ PBR bytes. If you want byte-for-byte equivalence with the upstream tool
 git clone https://gitlab.com/cmaiolino/ms-sys.git /tmp/ms-sys
 cd /tmp/ms-sys && make
 sudo cp bin/ms-sys /usr/local/bin/
-# Or without sudo: export USBWIN_MS_SYS=/tmp/ms-sys/bin/ms-sys
+# Or without sudo: export BOOTSMITH_MS_SYS=/tmp/ms-sys/bin/ms-sys
 ```
 
 Hybrid mode (Linux/BSD ISOs) does not touch the boot-record path at all.
@@ -80,7 +80,7 @@ repo — run them there.
 ## Usage
 
 ```sh
-usbwin <iso-path> <device>
+bootsmith <iso-path> <device>
        [--type=auto|windows|windows-ntxp|linux|hybrid|uefi]
        [--label=<volume-label>]
        [--boot-record=bootrec|ms-sys]
@@ -93,10 +93,10 @@ usbwin <iso-path> <device>
 Examples:
 
 ```sh
-sudo usbwin Win7_SP1.iso /dev/disk8
-sudo usbwin ubuntu-22.04.iso /dev/disk8 --type=hybrid
-sudo usbwin winxp_sp3.iso /dev/rdisk6 --type=windows-ntxp
-usbwin --dry-run Win7_SP1.iso /dev/disk8     # no sudo needed; emits bytes to /tmp
+sudo bootsmith Win7_SP1.iso /dev/disk8
+sudo bootsmith ubuntu-22.04.iso /dev/disk8 --type=hybrid
+sudo bootsmith winxp_sp3.iso /dev/rdisk6 --type=windows-ntxp
+bootsmith --dry-run Win7_SP1.iso /dev/disk8     # no sudo needed; emits bytes to /tmp
 ```
 
 For NT5-class Windows 2000/XP/2003 media, `--type=auto` resolves to the
@@ -107,7 +107,7 @@ recognized as NT5-class by auto-detect, but Win2k install support is still
 
 ## Safety
 
-usbwin will **refuse** to write to:
+bootsmith will **refuse** to write to:
 
 - The boot disk
 - Any disk flagged `internal: true` by DiskArbitration
